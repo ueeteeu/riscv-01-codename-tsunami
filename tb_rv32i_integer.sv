@@ -4,7 +4,9 @@ module tb_rv32i_integer;
     logic reset = 1'b1;
     logic [31:0] instruction_address, instruction;
     logic [31:0] data_address, data_write_data, data_read_data;
+    logic [3:0] data_write_mask;
     logic data_write_enable;
+    logic data_access_fault;
     logic [31:0] program_counter;
     logic illegal_instruction;
 
@@ -14,7 +16,8 @@ module tb_rv32i_integer;
         .clk(clk), .reset(reset),
         .instruction_address(instruction_address), .instruction(instruction),
         .data_address(data_address), .data_write_data(data_write_data),
-        .data_write_enable(data_write_enable), .data_read_data(data_read_data),
+        .data_write_enable(data_write_enable), .data_write_mask(data_write_mask),
+        .data_read_data(data_read_data), .data_access_fault(data_access_fault),
         .program_counter(program_counter), .illegal_instruction(illegal_instruction)
     );
 
@@ -22,7 +25,8 @@ module tb_rv32i_integer;
         .clk(clk), .reset(reset),
         .instruction_address(instruction_address), .instruction(instruction),
         .data_address(data_address), .data_write_data(data_write_data),
-        .data_write_enable(data_write_enable), .data_read_data(data_read_data)
+        .data_write_enable(data_write_enable), .data_write_mask(data_write_mask),
+        .data_read_data(data_read_data), .data_access_fault(data_access_fault)
     );
 
     function automatic logic [31:0] encode_i(

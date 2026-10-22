@@ -93,8 +93,19 @@ module tb_rv32i_bitmanip;
         check_result(32'h0000_0020);
         instruction = encode_i(12'h285, 1, 3'b001, 3); // bseti bit 5
         check_result(32'h0000_0020);
+        operand_a = 32'h0000_0020;
         instruction = encode_i(12'h485, 1, 3'b101, 3); // bexti bit 5
         check_result(32'h1);
+
+        operand_a = 32'h0100_0080;
+        instruction = encode_i(12'h287, 1, 3'b101, 3); // orc.b
+        check_result(32'hff00_00ff);
+        instruction = encode_i(12'h698, 1, 3'b101, 3); // rev8
+        check_result(32'h8000_0001);
+
+        operand_a = 32'habcd_ef00;
+        instruction = encode_r(7'b0000100, 0, 1, 3'b100, 3, 7'h33); // zext.h
+        check_result(32'h0000_ef00);
 
         $display("Zbb/Zbs bitmanip smoke test passed");
         $finish;

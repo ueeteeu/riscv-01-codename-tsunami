@@ -9,8 +9,10 @@ module tb_rv32i_privileged;
     logic [31:0] instruction;
     logic [31:0] data_address;
     logic [31:0] data_write_data;
+    logic [3:0] data_write_mask;
     logic data_write_enable;
     logic [31:0] data_read_data;
+    logic data_access_fault;
     logic [31:0] program_counter;
     logic illegal_instruction;
 
@@ -24,7 +26,9 @@ module tb_rv32i_privileged;
         .data_address(data_address),
         .data_write_data(data_write_data),
         .data_write_enable(data_write_enable),
+        .data_write_mask(data_write_mask),
         .data_read_data(data_read_data),
+        .data_access_fault(data_access_fault),
         .program_counter(program_counter),
         .illegal_instruction(illegal_instruction)
     );
@@ -37,7 +41,9 @@ module tb_rv32i_privileged;
         .data_address(data_address),
         .data_write_data(data_write_data),
         .data_write_enable(data_write_enable),
-        .data_read_data(data_read_data)
+        .data_write_mask(data_write_mask),
+        .data_read_data(data_read_data),
+        .data_access_fault(data_access_fault)
     );
 
     function automatic logic [31:0] encode_i(

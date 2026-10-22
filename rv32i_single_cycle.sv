@@ -2,7 +2,7 @@
 // Zbb/Zbs, and initial machine-mode privileged instruction support.
 //
 // Instruction memory returns a halfword-aligned 32-bit fetch window in the
-// same cycle. Data memory is word-wide; this core supports LB and aligned LW/SW.
+// same cycle. Data memory is word-wide with byte write enables.
 module rv32i_single_cycle (
     input  logic        clk,
     input  logic        reset,
@@ -13,7 +13,9 @@ module rv32i_single_cycle (
     output logic [31:0] data_address,
     output logic [31:0] data_write_data,
     output logic        data_write_enable,
+    output logic [3:0]  data_write_mask,
     input  logic [31:0] data_read_data,
+    input  logic        data_access_fault,
 
     output logic [31:0] program_counter,
     output logic        illegal_instruction
@@ -151,6 +153,7 @@ module rv32i_single_cycle (
         data_address          = 32'b0;
         data_write_data       = rs2_value;
         data_write_enable     = 1'b0;
+        data_write_mask       = 4'b0000;
         illegal_instruction   = 1'b0;
         csr_address           = decoded_instruction[31:20];
         csr_write_enable      = 1'b0;
@@ -238,12 +241,36 @@ module rv32i_single_cycle (
                 end
             end
 
-            7'b0000011: begin // LB and LW; the data port returns the containing word
+            7'b0000011: begin // Integer loads
                 data_address = rs1_value + immediate_i;
                 case (funct3)
                     3'b000: begin // LB sign-extends the selected byte
                         register_write_enable = 1'b1;
                         writeback_value = {{24{shifted_load_data[7]}}, shifted_load_data[7:0]};
+                    end
+                    3'b100: begin // LBU
+                        register_write_enable = 1'b1;
+                        writeback_value = {24'b0, shifted_load_data[7:0]};
+                    end
+                    3'b101: begin // LHU
+                        if (!data_address[0]) begin
+                            register_write_enable = 1'b1;
+                            writeback_value = {16'b0, shifted_load_data[15:0]};
+                        end else begin
+                            trap_valid = 1'b1;
+                            trap_cause = 32'd4;
+                            trap_value = data_address;
+                        end
+                    end
+                    3'b001: begin // LH
+                        if (!data_address[0]) begin
+                            register_write_enable = 1'b1;
+                            writeback_value = {{16{shifted_load_data[15]}}, shifted_load_data[15:0]};
+                        end else begin
+                            trap_valid = 1'b1;
+                            trap_cause = 32'd4;
+                            trap_value = data_address;
+                        end
                     end
                     3'b010: begin // LW requires a word-aligned address
                         if (data_address[1:0] == 2'b00) begin
@@ -256,13 +283,34 @@ module rv32i_single_cycle (
                         end
                     end
                     default: illegal_instruction = 1'b1;
-                end
+                endcase
             end
 
-            7'b0100011: begin // Stores: this core implements aligned SW only
+            7'b0100011: begin // Integer stores
                 data_address = rs1_value + immediate_s;
-                if (funct3 == 3'b010 && data_address[1:0] == 2'b00) begin
+                if (funct3 == 3'b000) begin // SB
                     data_write_enable = 1'b1;
+                    data_write_mask = 4'b0001 << data_address[1:0];
+                    data_write_data = rs2_value << {data_address[1:0], 3'b000};
+                end else if (funct3 == 3'b001) begin // SH
+                    if (!data_address[0]) begin
+                        data_write_enable = 1'b1;
+                        data_write_mask = 4'b0011 << data_address[1:0];
+                        data_write_data = rs2_value << {data_address[1:0], 3'b000};
+                    end else begin
+                        trap_valid = 1'b1;
+                        trap_cause = 32'd6;
+                        trap_value = data_address;
+                    end
+                end else if (funct3 == 3'b010) begin // SW
+                    if (data_address[1:0] == 2'b00) begin
+                        data_write_enable = 1'b1;
+                        data_write_mask = 4'b1111;
+                    end else begin
+                        trap_valid = 1'b1;
+                        trap_cause = 32'd6;
+                        trap_value = data_address;
+                    end
                 end else begin
                     illegal_instruction = 1'b1;
                 end
@@ -329,6 +377,10 @@ module rv32i_single_cycle (
                     data_address = rs1_value;
                     if (funct3 != 3'b010) begin
                         illegal_instruction = 1'b1;
+                    end else if (data_access_fault) begin
+                        trap_valid = 1'b1;
+                        trap_cause = (decoded_instruction[31:27] == 5'b00010) ? 32'd5 : 32'd7;
+                        trap_value = data_address;
                     end else if (data_address[1:0] != 2'b00) begin
                         trap_valid = 1'b1;
                         trap_cause = (decoded_instruction[31:27] == 5'b00010) ? 32'd4 : 32'd6;
@@ -361,6 +413,7 @@ module rv32i_single_cycle (
                             5'b11100: begin data_write_enable = 1'b1; data_write_data = (data_read_data > rs2_value) ? data_read_data : rs2_value; end // AMOMAXU.W
                             default: illegal_instruction = 1'b1;
                         endcase
+                        if (data_write_enable) data_write_mask = 4'b1111;
                         if (decoded_instruction[31:27] != 5'b00010) reservation_clear = 1'b1;
                     end
                 end
@@ -380,6 +433,9 @@ module rv32i_single_cycle (
                                     trap_valid = 1'b1;
                                     trap_cause = 32'd3;
                                 end else illegal_instruction = 1'b1;
+                            end
+                            12'h105: begin // WFI is a legal no-op without interrupt delivery
+                                if (rd != 0 || rs1 != 0) illegal_instruction = 1'b1;
                             end
                             12'h302: begin // MRET
                                 if (rd == 0 && rs1 == 0) begin
@@ -429,6 +485,16 @@ module rv32i_single_cycle (
             trap_valid = 1'b1;
             trap_cause = 32'd2;
             trap_value = is_compressed ? {16'b0, instruction[15:0]} : decoded_instruction;
+        end
+        if (!illegal_instruction && data_access_fault && opcode == 7'b0000011) begin
+            trap_valid = 1'b1;
+            trap_cause = 32'd5;
+            trap_value = data_address;
+        end
+        if (!illegal_instruction && data_access_fault && opcode == 7'b0100011) begin
+            trap_valid = 1'b1;
+            trap_cause = 32'd7;
+            trap_value = data_address;
         end
         if (trap_valid) begin
             next_pc = trap_vector;

@@ -79,6 +79,12 @@ module rv32i_bitmanip (
                     {7'b0100100, 3'b001}: begin recognized = 1'b1; result = operand_a & ~(32'b1 << register_index); end // BCLR
                     {7'b0110100, 3'b001}: begin recognized = 1'b1; result = operand_a ^ (32'b1 << register_index); end // BINV
                     {7'b0100100, 3'b101}: begin recognized = 1'b1; result = (operand_a >> register_index) & 32'b1; end // BEXT
+                    {7'b0000100, 3'b100}: begin
+                        if (instruction[24:20] == 5'b0) begin
+                            recognized = 1'b1;
+                            result = {16'b0, operand_a[15:0]};
+                        end
+                    end // ZEXT.H (PACK with rs2=x0)
                     default: begin end
                 endcase
             end
@@ -110,6 +116,17 @@ module rv32i_bitmanip (
                         end else if (function7 == 7'b0100100) begin // BEXTI
                             recognized = 1'b1;
                             result = (operand_a >> immediate_index) & 32'b1;
+                        end else if (function7 == 7'b0010100 && immediate_index == 5'd7) begin // ORC.B
+                            recognized = 1'b1;
+                            result = {
+                                {8{(|operand_a[31:24])}},
+                                {8{(|operand_a[23:16])}},
+                                {8{(|operand_a[15:8])}},
+                                {8{(|operand_a[7:0])}}
+                            };
+                        end else if (function7 == 7'b0110100 && immediate_index == 5'd24) begin // REV8
+                            recognized = 1'b1;
+                            result = {operand_a[7:0], operand_a[15:8], operand_a[23:16], operand_a[31:24]};
                         end
                     end
                     default: begin end
