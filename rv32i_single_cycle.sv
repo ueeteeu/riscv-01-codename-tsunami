@@ -1,5 +1,5 @@
-// A small, educational single-cycle RV32 CPU with integer, M/A, and initial
-// machine-mode privileged instruction support.
+// A small, educational single-cycle RV32 CPU with integer, M/A, selected
+// Zbb/Zbs, and initial machine-mode privileged instruction support.
 //
 // The instruction and data memories are outside this module. Instruction
 // memory is expected to return the instruction at instruction_address in the
@@ -58,6 +58,8 @@ module rv32i_single_cycle (
     logic signed [63:0] product_signed;
     logic signed [63:0] product_signed_unsigned;
     logic [31:0] shifted_load_data;
+    logic        bitmanip_recognized;
+    logic [31:0] bitmanip_result;
         logic        reservation_valid;
         logic [31:0] reservation_address;
         logic        reservation_set;
@@ -78,6 +80,14 @@ module rv32i_single_cycle (
         .trap_vector(trap_vector),
         .mret(mret),
         .mret_address(mret_address)
+    );
+
+    rv32i_bitmanip bitmanip_unit (
+        .instruction(instruction),
+        .operand_a(rs1_value),
+        .operand_b(rs2_value),
+        .recognized(bitmanip_recognized),
+        .result(bitmanip_result)
     );
 
     // The instruction address is the current PC; memory supplies the
@@ -146,6 +156,9 @@ module rv32i_single_cycle (
         case (opcode)
             7'b0110011: begin // R-type register-register arithmetic
                 register_write_enable = 1'b1;
+                if (bitmanip_recognized) begin
+                    writeback_value = bitmanip_result;
+                end else begin
                 case ({funct7, funct3})
                     {7'b0000000, 3'b000}: writeback_value = rs1_value + rs2_value; // ADD
                     {7'b0100000, 3'b000}: writeback_value = rs1_value - rs2_value; // SUB
@@ -180,10 +193,14 @@ module rv32i_single_cycle (
                         illegal_instruction = 1'b1;
                     end
                 endcase
+                end
             end
 
             7'b0010011: begin // I-type immediate arithmetic
                 register_write_enable = 1'b1;
+                if (bitmanip_recognized) begin
+                    writeback_value = bitmanip_result;
+                end else begin
                 case (funct3)
                     3'b000: writeback_value = rs1_value + immediate_i; // ADDI
                     3'b001: begin // SLLI; upper immediate bits encode the operation
@@ -207,6 +224,7 @@ module rv32i_single_cycle (
                         illegal_instruction = 1'b1;
                     end
                 endcase
+                end
             end
 
             7'b0000011: begin // LB and LW; the data port returns the containing word
