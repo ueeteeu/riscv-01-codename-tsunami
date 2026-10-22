@@ -1,9 +1,8 @@
 // A small, educational single-cycle RV32 CPU with integer, M/A, selected
 // Zbb/Zbs, and initial machine-mode privileged instruction support.
 //
-// The instruction and data memories are outside this module. Instruction
-// memory is expected to return the instruction at instruction_address in the
-// same cycle. Data memory is word-wide; this core accepts only aligned LW/SW.
+// Instruction memory returns a halfword-aligned 32-bit fetch window in the
+// same cycle. Data memory is word-wide; this core supports LB and aligned LW/SW.
 module rv32i_single_cycle (
     input  logic        clk,
     input  logic        reset,
@@ -60,6 +59,10 @@ module rv32i_single_cycle (
     logic [31:0] shifted_load_data;
     logic        bitmanip_recognized;
     logic [31:0] bitmanip_result;
+    logic [31:0] decoded_instruction;
+    logic        is_compressed;
+    logic        illegal_compressed;
+    logic [31:0] pc_increment;
         logic        reservation_valid;
         logic [31:0] reservation_address;
         logic        reservation_set;
@@ -83,11 +86,18 @@ module rv32i_single_cycle (
     );
 
     rv32i_bitmanip bitmanip_unit (
-        .instruction(instruction),
+        .instruction(decoded_instruction),
         .operand_a(rs1_value),
         .operand_b(rs2_value),
         .recognized(bitmanip_recognized),
         .result(bitmanip_result)
+    );
+
+    rv32c_decompressor compressed_decoder (
+        .fetched_instruction(instruction),
+        .decoded_instruction(decoded_instruction),
+        .is_compressed(is_compressed),
+        .illegal_compressed(illegal_compressed)
     );
 
     // The instruction address is the current PC; memory supplies the
@@ -100,22 +110,22 @@ module rv32i_single_cycle (
     // These fields occupy the same bit positions in the standard RISC-V
     // instruction formats, so they can be decoded directly from the word.
     always_comb begin
-        opcode = instruction[6:0];
-        rd     = instruction[11:7];
-        funct3 = instruction[14:12];
-        rs1    = instruction[19:15];
-        rs2    = instruction[24:20];
-        funct7 = instruction[31:25];
+        opcode = decoded_instruction[6:0];
+        rd     = decoded_instruction[11:7];
+        funct3 = decoded_instruction[14:12];
+        rs1    = decoded_instruction[19:15];
+        rs2    = decoded_instruction[24:20];
+        funct7 = decoded_instruction[31:25];
 
         // Each immediate is assembled separately because the ISA rearranges
         // immediate bits in branch, store, and jump instruction formats.
-        immediate_i = {{20{instruction[31]}}, instruction[31:20]};
-        immediate_s = {{20{instruction[31]}}, instruction[31:25], instruction[11:7]};
-        immediate_b = {{19{instruction[31]}}, instruction[31], instruction[7],
-                        instruction[30:25], instruction[11:8], 1'b0};
-        immediate_u = {instruction[31:12], 12'b0};
-        immediate_j = {{11{instruction[31]}}, instruction[31], instruction[19:12],
-                        instruction[20], instruction[30:21], 1'b0};
+        immediate_i = {{20{decoded_instruction[31]}}, decoded_instruction[31:20]};
+        immediate_s = {{20{decoded_instruction[31]}}, decoded_instruction[31:25], decoded_instruction[11:7]};
+        immediate_b = {{19{decoded_instruction[31]}}, decoded_instruction[31], decoded_instruction[7],
+                decoded_instruction[30:25], decoded_instruction[11:8], 1'b0};
+        immediate_u = {decoded_instruction[31:12], 12'b0};
+        immediate_j = {{11{decoded_instruction[31]}}, decoded_instruction[31], decoded_instruction[19:12],
+                decoded_instruction[20], decoded_instruction[30:21], 1'b0};
 
         // x0 always reads as zero, regardless of the contents of the array.
         rs1_value = (rs1 == 5'd0) ? 32'b0 : registers[rs1];
@@ -134,14 +144,15 @@ module rv32i_single_cycle (
     // Defaults describe a harmless sequential advance (a NOP-like behavior)
     // and ensure every output has a value for every instruction encoding.
     always_comb begin
-        next_pc              = program_counter + 32'd4;
+        pc_increment         = is_compressed ? 32'd2 : 32'd4;
+        next_pc              = program_counter + pc_increment;
         writeback_value      = 32'b0;
         register_write_enable = 1'b0;
         data_address          = 32'b0;
         data_write_data       = rs2_value;
         data_write_enable     = 1'b0;
         illegal_instruction   = 1'b0;
-        csr_address           = instruction[31:20];
+        csr_address           = decoded_instruction[31:20];
         csr_write_enable      = 1'b0;
         csr_write_data        = 32'b0;
         csr_source_value      = rs1_value;
@@ -204,14 +215,14 @@ module rv32i_single_cycle (
                 case (funct3)
                     3'b000: writeback_value = rs1_value + immediate_i; // ADDI
                     3'b001: begin // SLLI; upper immediate bits encode the operation
-                        if (instruction[31:25] == 7'b0000000) writeback_value = rs1_value << instruction[24:20];
+                        if (decoded_instruction[31:25] == 7'b0000000) writeback_value = rs1_value << decoded_instruction[24:20];
                         else begin register_write_enable = 1'b0; illegal_instruction = 1'b1; end
                     end
                     3'b011: writeback_value = (rs1_value < immediate_i) ? 32'd1 : 32'd0; // SLTIU
                     3'b100: writeback_value = rs1_value ^ immediate_i; // XORI
                     3'b101: begin // SRLI/SRAI
-                        if (instruction[31:25] == 7'b0000000) writeback_value = rs1_value >> instruction[24:20];
-                        else if (instruction[31:25] == 7'b0100000) writeback_value = $signed(rs1_value) >>> instruction[24:20];
+                        if (decoded_instruction[31:25] == 7'b0000000) writeback_value = rs1_value >> decoded_instruction[24:20];
+                        else if (decoded_instruction[31:25] == 7'b0100000) writeback_value = $signed(rs1_value) >>> decoded_instruction[24:20];
                         else begin register_write_enable = 1'b0; illegal_instruction = 1'b1; end
                     end
                     3'b110: writeback_value = rs1_value | immediate_i; // ORI
@@ -267,7 +278,7 @@ module rv32i_single_cycle (
                     3'b111: if (rs1_value >= rs2_value) next_pc = program_counter + immediate_b; // BGEU
                     default: illegal_instruction = 1'b1;
                 endcase
-                if (next_pc[1:0] != 2'b00 && next_pc != program_counter + 32'd4) begin
+                if (next_pc[0] != 1'b0 && next_pc != program_counter + pc_increment) begin
                     trap_valid = 1'b1;
                     trap_cause = 32'd0;
                     trap_value = next_pc;
@@ -276,9 +287,9 @@ module rv32i_single_cycle (
 
             7'b1101111: begin // JAL: save the return address and jump
                 register_write_enable = 1'b1;
-                writeback_value = program_counter + 32'd4;
+                writeback_value = program_counter + pc_increment;
                 next_pc = program_counter + immediate_j;
-                if (next_pc[1:0] != 2'b00) begin
+                if (next_pc[0] != 1'b0) begin
                     trap_valid = 1'b1;
                     trap_cause = 32'd0;
                     trap_value = next_pc;
@@ -288,9 +299,9 @@ module rv32i_single_cycle (
             7'b1100111: begin // JALR: clear target bit zero as specified
                 if (funct3 == 3'b000) begin
                     register_write_enable = 1'b1;
-                    writeback_value = program_counter + 32'd4;
+                    writeback_value = program_counter + pc_increment;
                     next_pc = (rs1_value + immediate_i) & 32'hffff_fffe;
-                    if (next_pc[1:0] != 2'b00) begin
+                    if (next_pc[0] != 1'b0) begin
                         trap_valid = 1'b1;
                         trap_cause = 32'd0;
                         trap_value = next_pc;
@@ -320,12 +331,12 @@ module rv32i_single_cycle (
                         illegal_instruction = 1'b1;
                     end else if (data_address[1:0] != 2'b00) begin
                         trap_valid = 1'b1;
-                        trap_cause = (instruction[31:27] == 5'b00010) ? 32'd4 : 32'd6;
+                        trap_cause = (decoded_instruction[31:27] == 5'b00010) ? 32'd4 : 32'd6;
                         trap_value = data_address;
                     end else begin
                         register_write_enable = 1'b1;
                         writeback_value = data_read_data;
-                        case (instruction[31:27])
+                        case (decoded_instruction[31:27])
                             5'b00010: begin // LR.W requires rs2=x0
                                 if (rs2 == 5'd0) reservation_set = 1'b1;
                                 else illegal_instruction = 1'b1;
@@ -350,14 +361,14 @@ module rv32i_single_cycle (
                             5'b11100: begin data_write_enable = 1'b1; data_write_data = (data_read_data > rs2_value) ? data_read_data : rs2_value; end // AMOMAXU.W
                             default: illegal_instruction = 1'b1;
                         endcase
-                        if (instruction[31:27] != 5'b00010) reservation_clear = 1'b1;
+                        if (decoded_instruction[31:27] != 5'b00010) reservation_clear = 1'b1;
                     end
                 end
 
             7'b1110011: begin // Machine-mode SYSTEM instructions and CSR access
                 case (funct3)
                     3'b000: begin
-                        case (instruction[31:20])
+                        case (decoded_instruction[31:20])
                             12'h000: begin // ECALL from machine mode
                                 if (rd == 0 && rs1 == 0) begin
                                     trap_valid = 1'b1;
@@ -411,10 +422,13 @@ module rv32i_single_cycle (
 
         // Route unsupported encodings to machine mode and suppress their
         // architectural side effects. Synchronous exceptions take PC priority.
+        if (illegal_compressed) begin
+            illegal_instruction = 1'b1;
+        end
         if (illegal_instruction) begin
             trap_valid = 1'b1;
             trap_cause = 32'd2;
-            trap_value = instruction;
+            trap_value = is_compressed ? {16'b0, instruction[15:0]} : decoded_instruction;
         end
         if (trap_valid) begin
             next_pc = trap_vector;

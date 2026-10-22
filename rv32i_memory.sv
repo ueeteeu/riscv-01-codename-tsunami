@@ -37,15 +37,24 @@ module rv32i_memory #(
         end
     end
 
-    // Instruction fetches must be word-aligned. Data reads return their
-    // containing word so LB can select a byte; the CPU checks LW/AMO alignment.
-    // Out-of-range reads return zero and out-of-range writes are ignored.
+    // Instruction fetch returns a halfword-aligned 32-bit window so compressed
+    // instructions and 32-bit instructions at PC+2 both decode correctly.
+    // Data reads return their containing word so LB can select a byte.
     always_comb begin
         instruction = 32'b0;
         data_read_data = 32'b0;
 
-        if (instruction_address[1:0] == 2'b00 && instruction_address < MEMORY_BYTES) begin
-            instruction = words[instruction_address[22:2]];
+        if (instruction_address[0] == 1'b0 && instruction_address < MEMORY_BYTES) begin
+            if (instruction_address[1] == 1'b0) begin
+                instruction = words[instruction_address[22:2]];
+            end else begin
+                // Present a 32-bit fetch window beginning at the upper
+                // halfword, spanning two words when a 32-bit op starts here.
+                instruction[15:0] = words[instruction_address[22:2]][31:16];
+                if (instruction_address < MEMORY_BYTES - 2) begin
+                    instruction[31:16] = words[instruction_address[22:2] + 1'b1][15:0];
+                end
+            end
         end
 
         // Data reads return the containing word; the CPU selects the addressed

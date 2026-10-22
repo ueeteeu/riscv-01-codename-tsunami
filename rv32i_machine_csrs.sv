@@ -50,10 +50,9 @@ module rv32i_machine_csrs (
             end
         endcase
 
-        // mtvec mode is fixed to direct (00), and mepc is word-aligned because
-        // this core does not implement compressed instructions.
+        // mtvec mode is fixed to direct (00); with C enabled, mepc keeps bit 1.
         trap_vector = {mtvec_base[31:2], 2'b00};
-        mret_address = mepc;
+        mret_address = {mepc[31:1], 1'b0};
     end
 
     // Traps save the faulting instruction address and cause. MRET restores
@@ -68,7 +67,7 @@ module rv32i_machine_csrs (
             mcause       <= 32'b0;
             mtval        <= 32'b0;
         end else if (trap_valid) begin
-            mepc         <= {trap_pc[31:2], 2'b00};
+            mepc         <= {trap_pc[31:1], 1'b0};
             mcause       <= trap_cause;
             mtval        <= trap_value;
             mstatus_mpie <= mstatus_mie;
@@ -84,7 +83,7 @@ module rv32i_machine_csrs (
                 end
                 12'h305: mtvec_base <= {csr_write_data[31:2], 2'b00};
                 12'h340: mscratch <= csr_write_data;
-                12'h341: mepc <= {csr_write_data[31:2], 2'b00};
+                12'h341: mepc <= {csr_write_data[31:1], 1'b0};
                 12'h342: mcause <= csr_write_data;
                 12'h343: mtval <= csr_write_data;
                 default: begin
