@@ -21,7 +21,7 @@ module tb_rv32i_integer;
         .program_counter(program_counter), .illegal_instruction(illegal_instruction)
     );
 
-    rv32i_memory memory (
+    rv32i_memory #(.MEMORY_BYTES(512)) memory (
         .clk(clk), .reset(reset),
         .instruction_address(instruction_address), .instruction(instruction),
         .data_address(data_address), .data_write_data(data_write_data),

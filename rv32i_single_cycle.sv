@@ -109,6 +109,18 @@ module rv32i_single_cycle (
         shifted_load_data = data_read_data >> {data_address[1:0], 3'b000};
     end
 
+    // Keep address generation independent of memory responses so access-fault
+    // feedback cannot create a combinational path back into the address.
+    always_comb begin
+        data_address = 32'b0;
+        case (decoded_instruction[6:0])
+            7'b0000011: data_address = rs1_value + immediate_i;
+            7'b0100011: data_address = rs1_value + immediate_s;
+            7'b0101111: data_address = rs1_value;
+            default: begin end
+        endcase
+    end
+
     // These fields occupy the same bit positions in the standard RISC-V
     // instruction formats, so they can be decoded directly from the word.
     always_comb begin
@@ -150,7 +162,6 @@ module rv32i_single_cycle (
         next_pc              = program_counter + pc_increment;
         writeback_value      = 32'b0;
         register_write_enable = 1'b0;
-        data_address          = 32'b0;
         data_write_data       = rs2_value;
         data_write_enable     = 1'b0;
         data_write_mask       = 4'b0000;
@@ -242,7 +253,6 @@ module rv32i_single_cycle (
             end
 
             7'b0000011: begin // Integer loads
-                data_address = rs1_value + immediate_i;
                 case (funct3)
                     3'b000: begin // LB sign-extends the selected byte
                         register_write_enable = 1'b1;
@@ -287,7 +297,6 @@ module rv32i_single_cycle (
             end
 
             7'b0100011: begin // Integer stores
-                data_address = rs1_value + immediate_s;
                 if (funct3 == 3'b000) begin // SB
                     data_write_enable = 1'b1;
                     data_write_mask = 4'b0001 << data_address[1:0];
@@ -374,7 +383,6 @@ module rv32i_single_cycle (
             end
 
                 7'b0101111: begin // A extension: word LR/SC and AMO operations
-                    data_address = rs1_value;
                     if (funct3 != 3'b010) begin
                         illegal_instruction = 1'b1;
                     end else if (data_access_fault) begin

@@ -7,7 +7,8 @@
 module rv32i_memory #(
     // Optional hexadecimal file with one 32-bit word per line, for example
     // "program.hex". The first line is placed at byte address zero.
-    parameter INIT_FILE = ""
+    parameter INIT_FILE = "",
+    parameter integer MEMORY_BYTES = 8 * 1024 * 1024
 ) (
     input  logic        clk,
     input  logic        reset,
@@ -22,7 +23,6 @@ module rv32i_memory #(
     output logic [31:0] data_read_data,
     output logic        data_access_fault
 );
-    localparam integer MEMORY_BYTES = 8 * 1024 * 1024;
     localparam integer WORD_COUNT   = MEMORY_BYTES / 4;
 
     // Each array entry corresponds to four consecutive byte addresses.
@@ -44,9 +44,6 @@ module rv32i_memory #(
     // Data reads return their containing word so LB can select a byte.
     always_comb begin
         instruction = 32'b0;
-        data_read_data = 32'b0;
-        data_access_fault = (data_address >= MEMORY_BYTES);
-
         if (instruction_address[0] == 1'b0 && instruction_address < MEMORY_BYTES) begin
             if (instruction_address[1] == 1'b0) begin
                 instruction = words[instruction_address[22:2]];
@@ -59,9 +56,13 @@ module rv32i_memory #(
                 end
             end
         end
+    end
 
-        // Data reads return the containing word; the CPU selects the addressed
-        // byte for LB. Word alignment is checked by the CPU for LW.
+    always_comb begin
+        data_read_data = 32'b0;
+        data_access_fault = (data_address >= MEMORY_BYTES);
+        // Data reads return the containing word; the CPU selects and extends
+        // the addressed byte or halfword.
         if (data_address < MEMORY_BYTES) begin
             data_read_data = words[data_address[22:2]];
         end

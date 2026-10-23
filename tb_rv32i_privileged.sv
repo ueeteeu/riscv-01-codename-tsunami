@@ -33,7 +33,7 @@ module tb_rv32i_privileged;
         .illegal_instruction(illegal_instruction)
     );
 
-    rv32i_memory memory (
+    rv32i_memory #(.MEMORY_BYTES(512)) memory (
         .clk(clk),
         .reset(reset),
         .instruction_address(instruction_address),
@@ -75,6 +75,7 @@ module tb_rv32i_privileged;
         memory.words[3]  = encode_csr(12'h300, 5'd5, 3'b001, 5'd0);      // csrw mstatus,x5
         memory.words[4]  = 32'h00000073;                                 // ecall
         memory.words[5]  = encode_i(12'd1, 5'd0, 3'b000, 5'd2, 7'h13);  // addi x2,x0,1
+        memory.words[6]  = 32'h00000013;                                 // addi x0,x0,0
 
         // Handler at address 64 reads the saved PC, skips ECALL, then MRETs.
         memory.words[16] = encode_csr(12'h341, 5'd0, 3'b010, 5'd3);     // csrrs x3,mepc,x0

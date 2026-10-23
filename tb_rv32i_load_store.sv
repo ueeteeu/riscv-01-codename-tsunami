@@ -30,7 +30,7 @@ module tb_rv32i_load_store;
         .illegal_instruction(illegal_instruction)
     );
 
-    rv32i_memory memory (
+    rv32i_memory #(.MEMORY_BYTES(512)) memory (
         .clk(clk),
         .reset(reset),
         .instruction_address(instruction_address),
@@ -152,21 +152,25 @@ module tb_rv32i_load_store;
         apply_reset();
         check_trap(32'd6, 32'd257);
 
-        memory.words[0] = encode_u(20'h00800, 1); // 8 MiB, first invalid address
+        memory.words[0] = encode_i(12'd512, 0, 3'b000, 1, 7'h13);
         memory.words[1] = encode_i(12'd128, 0, 3'b000, 2, 7'h13);
         memory.words[2] = encode_csr(12'h305, 2, 3'b001, 0);
         memory.words[3] = encode_i(12'd0, 1, 3'b010, 3, 7'h03); // access-faulting lw
         apply_reset();
-        check_trap(32'd5, 32'h0080_0000);
+        check_trap(32'd5, 32'd512);
 
-        memory.words[0] = encode_u(20'h00800, 1);
+        memory.words[0] = encode_i(12'd512, 0, 3'b000, 1, 7'h13);
         memory.words[1] = encode_i(12'd128, 0, 3'b000, 2, 7'h13);
         memory.words[2] = encode_csr(12'h305, 2, 3'b001, 0);
         memory.words[3] = encode_s(12'd0, 2, 1, 3'b010); // access-faulting sw
         apply_reset();
-        check_trap(32'd7, 32'h0080_0000);
+        check_trap(32'd7, 32'd512);
 
         $display("RV32I load/store smoke test passed");
         $finish;
+    end
+
+    initial begin
+        #2000 $fatal(1, "Load/store test timed out at PC=%h", program_counter);
     end
 endmodule
