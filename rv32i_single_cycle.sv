@@ -1,5 +1,5 @@
-// A small, educational single-cycle RV32 CPU with integer, M/A, selected
-// Zbb/Zbs, and initial machine-mode privileged instruction support.
+// A small, educational single-cycle RV32 CPU with integer, M/A, the listed
+// simulation-only RV32F subset, selected Zbb/Zbs, and machine-mode support.
 //
 // Instruction memory returns a halfword-aligned 32-bit fetch window in the
 // same cycle. Data memory is word-wide with byte write enables.
@@ -23,6 +23,7 @@ module rv32i_single_cycle (
     // The register file has 32 architectural registers. x0 is represented
     // by a constant read value and is never allowed to be written.
     logic [31:0] registers [0:31];
+    logic [31:0] floating_registers [0:31];
 
     logic [4:0]  rs1;
     logic [4:0]  rs2;
@@ -32,6 +33,11 @@ module rv32i_single_cycle (
     logic [6:0]  funct7;
     logic [31:0] rs1_value;
     logic [31:0] rs2_value;
+    logic [31:0] floating_rs1_value;
+    logic [31:0] floating_rs2_value;
+    logic [31:0] floating_rs3_value;
+    logic [31:0] floating_unit_operand_a;
+    logic [31:0] floating_result;
 
     logic [31:0] immediate_i;
     logic [31:0] immediate_s;
@@ -42,6 +48,9 @@ module rv32i_single_cycle (
     logic [31:0] next_pc;
     logic [31:0] writeback_value;
     logic        register_write_enable;
+    logic        floating_register_write_enable;
+    logic        floating_unit_recognized;
+    logic        floating_result_to_fp;
     logic [11:0] csr_address;
     logic        csr_write_enable;
     logic [31:0] csr_write_data;
@@ -59,6 +68,7 @@ module rv32i_single_cycle (
     logic signed [63:0] product_signed;
     logic signed [63:0] product_signed_unsigned;
     logic [31:0] shifted_load_data;
+    logic [31:0] floating_writeback_value;
     logic        bitmanip_recognized;
     logic [31:0] bitmanip_result;
     logic [31:0] decoded_instruction;
@@ -95,6 +105,16 @@ module rv32i_single_cycle (
         .result(bitmanip_result)
     );
 
+    rv32f_unit floating_point_unit (
+        .instruction(decoded_instruction),
+        .operand_a(floating_unit_operand_a),
+        .operand_b(floating_rs2_value),
+        .operand_c(floating_rs3_value),
+        .recognized(floating_unit_recognized),
+        .writes_fp_register(floating_result_to_fp),
+        .result(floating_result)
+    );
+
     rv32c_decompressor compressed_decoder (
         .fetched_instruction(instruction),
         .decoded_instruction(decoded_instruction),
@@ -114,8 +134,8 @@ module rv32i_single_cycle (
     always_comb begin
         data_address = 32'b0;
         case (decoded_instruction[6:0])
-            7'b0000011: data_address = rs1_value + immediate_i;
-            7'b0100011: data_address = rs1_value + immediate_s;
+            7'b0000011, 7'b0000111: data_address = rs1_value + immediate_i;
+            7'b0100011, 7'b0100111: data_address = rs1_value + immediate_s;
             7'b0101111: data_address = rs1_value;
             default: begin end
         endcase
@@ -144,6 +164,12 @@ module rv32i_single_cycle (
         // x0 always reads as zero, regardless of the contents of the array.
         rs1_value = (rs1 == 5'd0) ? 32'b0 : registers[rs1];
         rs2_value = (rs2 == 5'd0) ? 32'b0 : registers[rs2];
+        floating_rs1_value = floating_registers[rs1];
+        floating_rs2_value = floating_registers[rs2];
+        floating_rs3_value = floating_registers[decoded_instruction[31:27]];
+        floating_unit_operand_a = ((opcode == 7'b1010011) &&
+                                   (funct7 == 7'b1101000 || funct7 == 7'b1111000)) ?
+                                  rs1_value : floating_rs1_value;
 
         // Extend operands before multiplying so all high-half products retain
         // the correct signed or unsigned 64-bit result.
@@ -162,6 +188,8 @@ module rv32i_single_cycle (
         next_pc              = program_counter + pc_increment;
         writeback_value      = 32'b0;
         register_write_enable = 1'b0;
+        floating_register_write_enable = 1'b0;
+        floating_writeback_value = 32'b0;
         data_write_data       = rs2_value;
         data_write_enable     = 1'b0;
         data_write_mask       = 4'b0000;
@@ -319,6 +347,51 @@ module rv32i_single_cycle (
                         trap_valid = 1'b1;
                         trap_cause = 32'd6;
                         trap_value = data_address;
+                    end
+                end else begin
+                    illegal_instruction = 1'b1;
+                end
+            end
+
+            7'b0000111: begin // FLW
+                if (funct3 == 3'b010) begin
+                    if (data_address[1:0] == 2'b00) begin
+                        floating_register_write_enable = 1'b1;
+                        floating_writeback_value = data_read_data;
+                    end else begin
+                        trap_valid = 1'b1;
+                        trap_cause = 32'd4;
+                        trap_value = data_address;
+                    end
+                end else begin
+                    illegal_instruction = 1'b1;
+                end
+            end
+
+            7'b0100111: begin // FSW
+                if (funct3 == 3'b010) begin
+                    if (data_address[1:0] == 2'b00) begin
+                        data_write_enable = 1'b1;
+                        data_write_mask = 4'b1111;
+                        data_write_data = floating_rs2_value;
+                    end else begin
+                        trap_valid = 1'b1;
+                        trap_cause = 32'd6;
+                        trap_value = data_address;
+                    end
+                end else begin
+                    illegal_instruction = 1'b1;
+                end
+            end
+
+            7'b1010011, 7'b1000011, 7'b1000111, 7'b1001011, 7'b1001111: begin
+                if (floating_unit_recognized) begin
+                    if (floating_result_to_fp) begin
+                        floating_register_write_enable = 1'b1;
+                        floating_writeback_value = floating_result;
+                    end else begin
+                        register_write_enable = 1'b1;
+                        writeback_value = floating_result;
                     end
                 end else begin
                     illegal_instruction = 1'b1;
@@ -494,12 +567,14 @@ module rv32i_single_cycle (
             trap_cause = 32'd2;
             trap_value = is_compressed ? {16'b0, instruction[15:0]} : decoded_instruction;
         end
-        if (!illegal_instruction && data_access_fault && opcode == 7'b0000011) begin
+        if (!illegal_instruction && data_access_fault &&
+            (opcode == 7'b0000011 || opcode == 7'b0000111)) begin
             trap_valid = 1'b1;
             trap_cause = 32'd5;
             trap_value = data_address;
         end
-        if (!illegal_instruction && data_access_fault && opcode == 7'b0100011) begin
+        if (!illegal_instruction && data_access_fault &&
+            (opcode == 7'b0100011 || opcode == 7'b0100111)) begin
             trap_valid = 1'b1;
             trap_cause = 32'd7;
             trap_value = data_address;
@@ -507,6 +582,7 @@ module rv32i_single_cycle (
         if (trap_valid) begin
             next_pc = trap_vector;
             register_write_enable = 1'b0;
+            floating_register_write_enable = 1'b0;
             data_write_enable = 1'b0;
             csr_write_enable = 1'b0;
                 reservation_set = 1'b0;
@@ -529,6 +605,7 @@ module rv32i_single_cycle (
                 reservation_address <= 32'b0;
             for (integer index = 0; index < 32; index = index + 1) begin
                 registers[index] <= 32'b0;
+                floating_registers[index] <= 32'b0;
             end
         end else begin
             program_counter <= next_pc;
@@ -541,6 +618,9 @@ module rv32i_single_cycle (
                 end
             if (register_write_enable) begin
                 registers[rd] <= writeback_value;
+            end
+            if (floating_register_write_enable) begin
+                floating_registers[rd] <= floating_writeback_value;
             end
         end
     end

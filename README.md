@@ -13,6 +13,9 @@ core. Instruction and data memories are separate interfaces in the CPU, with
   architectural divide-by-zero and signed-overflow results.
 - **RV32A:** word `LR`/`SC` and the word AMO operations.
 - **RV32C:** compressed integer instructions are expanded to their RV32I forms.
+- **RV32F reference-card subset:** single-precision loads/stores, fused
+  multiply-add/subtract, arithmetic, square root, sign injection, min/max,
+  integer conversions, moves, comparisons, and classification.
 - **Zbb/Zbs subset:** Boolean operations, rotates, min/max, bit counts,
   sign/zero extension, byte OR, byte reversal, and bit set/clear/invert/extract
   operations.
@@ -36,9 +39,13 @@ bytes for `SB` and `SH`.
   synchronization; this implementation has one hart and no instruction cache.
 - The atomic reservation model is for a single hart. `aq`/`rl` ordering and
   interactions with other harts are not modeled.
-- The compressed floating-point encodings and the RV32F/RV32D floating-point
-  instruction sets are not implemented; the core has no floating-point
-  registers, rounding state, or arithmetic datapath.
+- The listed RV32F operations use SystemVerilog `real` arithmetic for
+  simulation and are not synthesizable. Static rounding modes RNE, RTZ, RDN,
+  RUP, and RMM are supported; dynamic rounding mode and floating-point
+  exception flags are not implemented. Fused operations use host double
+  intermediates, so extremely rare double-rounding cases may differ from a
+  fully IEEE-754 correctly rounded FPU. The full RV32F/RV32D specifications,
+  double precision, and compressed floating-point encodings are not implemented.
 - Instruction-fetch access faults and a complete privileged architecture are
   not yet implemented.
 
@@ -48,11 +55,20 @@ bytes for `SB` and `SH`.
 - `rv32i_memory.sv`: 8 MiB simulation memory with byte-lane stores.
 - `rv32c_decompressor.sv`: compressed integer instruction expansion.
 - `rv32i_bitmanip.sv`: selected Zbb/Zbs operations.
+- `rv32f_unit.sv`: simulation-oriented single-precision reference-card subset.
 - `rv32i_machine_csrs.sv`: machine CSR and synchronous trap state.
 - `rv32i_hex_display.sv`: optional multiplexed hexadecimal display.
 - `tb_*.sv`: focused SystemVerilog testbenches for the decoder, integer,
-  atomic, bit-manipulation, load/store, and machine-mode behavior.
+  floating-point, atomic, bit-manipulation, load/store, and machine-mode behavior.
 
 Compile the relevant source modules together with a testbench using a
-SystemVerilog simulator. The load/store testbench also checks misaligned and
+SystemVerilog simulator. With Icarus Verilog, run from the project directory:
+
+```powershell
+iverilog -g2012 -s tb_rv32f -o tb_rv32f.vvp *.sv
+vvp tb_rv32f.vvp
+```
+
+Replace `tb_rv32f` with another `tb_*` module to run its focused testbench.
+The load/store and floating-point testbenches also check alignment and
 out-of-range memory traps.
