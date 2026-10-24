@@ -5,9 +5,11 @@ module rv32f_unit (
     input  logic [31:0] operand_a,
     input  logic [31:0] operand_b,
     input  logic [31:0] operand_c,
+    input  logic [2:0]  dynamic_rounding_mode,
     output logic        recognized,
     output logic        writes_fp_register,
-    output logic [31:0] result
+    output logic [31:0] result,
+    output logic [4:0]  exception_flags
 );
     logic [6:0] opcode;
     logic [6:0] function7;
@@ -211,7 +213,9 @@ module rv32f_unit (
         function7 = instruction[31:25];
         function3 = instruction[14:12];
         source2 = instruction[24:20];
-        rounding_mode = function3;
+        // rm=111 requests frm from the floating-point CSR block; reserved
+        // rounding modes are rejected by the per-instruction decode below.
+        rounding_mode = function3 == 3'b111 ? dynamic_rounding_mode : function3;
         sign_a = operand_a[31];
         sign_b = operand_b[31];
         sign_c = operand_c[31];
@@ -230,6 +234,7 @@ module rv32f_unit (
         recognized = 1'b0;
         writes_fp_register = 1'b0;
         result = 32'b0;
+        exception_flags = 5'b0;
 
         case (opcode)
             7'b1010011: begin
@@ -250,14 +255,20 @@ module rv32f_unit (
                             case (function7)
                                 7'b0000000: begin // FADD.S
                                     if (nan_a || nan_b ||
-                                        (infinity_a && infinity_b && (sign_a != sign_b))) fp_result = quiet_nan();
+                                        (infinity_a && infinity_b && (sign_a != sign_b))) begin
+                                        fp_result = quiet_nan();
+                                        exception_flags[4] = !nan_a && !nan_b;
+                                    end
                                     else if (infinity_a) fp_result = {sign_a, 8'hff, 23'b0};
                                     else if (infinity_b) fp_result = {sign_b, 8'hff, 23'b0};
                                     else fp_result = real_to_single(real_a + real_b, rounding_mode);
                                 end
                                 7'b0000100: begin // FSUB.S
                                     if (nan_a || nan_b ||
-                                        (infinity_a && infinity_b && (sign_a == sign_b))) fp_result = quiet_nan();
+                                        (infinity_a && infinity_b && (sign_a == sign_b))) begin
+                                        fp_result = quiet_nan();
+                                        exception_flags[4] = !nan_a && !nan_b;
+                                    end
                                     else if (infinity_a) fp_result = {sign_a, 8'hff, 23'b0};
                                     else if (infinity_b) fp_result = {!sign_b, 8'hff, 23'b0};
                                     else fp_result = real_to_single(real_a - real_b, rounding_mode);
@@ -265,29 +276,44 @@ module rv32f_unit (
                                 7'b0001000: begin // FMUL.S
                                     if (nan_a || nan_b ||
                                         ((infinity_a && operand_b[30:0] == 0) ||
-                                         (infinity_b && operand_a[30:0] == 0))) fp_result = quiet_nan();
+                                         (infinity_b && operand_a[30:0] == 0))) begin
+                                        fp_result = quiet_nan();
+                                        exception_flags[4] = !nan_a && !nan_b;
+                                    end
                                     else if (infinity_a || infinity_b) fp_result = {sign_a ^ sign_b, 8'hff, 23'b0};
                                     else fp_result = real_to_single(real_a * real_b, rounding_mode);
                                 end
                                 7'b0001100: begin // FDIV.S
                                     if (nan_a || nan_b ||
                                         ((operand_a[30:0] == 0) && (operand_b[30:0] == 0)) ||
-                                        (infinity_a && infinity_b)) fp_result = quiet_nan();
-                                    else if (infinity_a || operand_b[30:0] == 0)
+                                        (infinity_a && infinity_b)) begin
+                                        fp_result = quiet_nan();
+                                        exception_flags[4] = !nan_a && !nan_b;
+                                    end else if (operand_b[30:0] == 0) begin
+                                        fp_result = {sign_a ^ sign_b, 8'hff, 23'b0};
+                                        exception_flags[3] = 1'b1;
+                                    end else if (infinity_a)
                                         fp_result = {sign_a ^ sign_b, 8'hff, 23'b0};
                                     else if (infinity_b || operand_a[30:0] == 0)
                                         fp_result = {sign_a ^ sign_b, 31'b0};
                                     else fp_result = real_to_single(real_a / real_b, rounding_mode);
                                 end
                                 7'b0101100: begin // FSQRT.S
-                                    if (nan_a || (sign_a && operand_a[30:0] != 0)) fp_result = quiet_nan();
+                                    if (nan_a || (sign_a && operand_a[30:0] != 0)) begin
+                                        fp_result = quiet_nan();
+                                        exception_flags[4] = !nan_a;
+                                    end
                                     else if (infinity_a) fp_result = operand_a;
                                     else fp_result = real_to_single($sqrt(real_a), rounding_mode);
                                 end
                                 7'b1100000: begin // FCVT.W[U].S
                                     writes_fp_register = 1'b0;
-                                    if (nan_a) fp_result = 32'hffff_ffff;
+                                    if (nan_a) begin
+                                        fp_result = 32'hffff_ffff;
+                                        exception_flags[4] = 1'b1;
+                                    end
                                     else if (infinity_a) begin
+                                        exception_flags[4] = 1'b1;
                                         if (source2 == 0)
                                             fp_result = sign_a ? 32'h8000_0000 : 32'h7fff_ffff;
                                         else
@@ -296,20 +322,27 @@ module rv32f_unit (
                                     else begin
                                         integer_result = round_to_integer(real_a, rounding_mode);
                                         if (source2 == 0) begin
-                                            if (integer_result < -2147483648.0)
+                                            if (integer_result < -2147483648.0) begin
                                                 fp_result = 32'h8000_0000;
-                                            else if (integer_result >= 2147483648.0)
+                                                exception_flags[4] = 1'b1;
+                                            end else if (integer_result >= 2147483648.0) begin
                                                 fp_result = 32'h7fff_ffff;
-                                            else fp_result = $rtoi(integer_result);
+                                                exception_flags[4] = 1'b1;
+                                            end else fp_result = $rtoi(integer_result);
                                         end else begin
-                                            if (integer_result < 0.0)
+                                            if (integer_result < 0.0) begin
                                                 fp_result = 32'b0;
-                                            else if (integer_result >= 4294967296.0)
+                                                exception_flags[4] = 1'b1;
+                                            end else if (integer_result >= 4294967296.0) begin
                                                 fp_result = 32'hffff_ffff;
+                                                exception_flags[4] = 1'b1;
+                                            end
                                             else if (integer_result >= 2147483648.0)
                                                 fp_result = 32'h8000_0000 | $rtoi(integer_result - 2147483648.0);
                                             else fp_result = $rtoi(integer_result);
                                         end
+                                        if (!exception_flags[4] && integer_result != real_a)
+                                            exception_flags[0] = 1'b1;
                                     end
                                 end
                                 7'b1101000: begin // FCVT.S.W[U]
@@ -317,9 +350,39 @@ module rv32f_unit (
                                     else real_result = $itor(operand_a[30:0]) +
                                                        (operand_a[31] ? 2147483648.0 : 0.0);
                                     fp_result = real_to_single(real_result, rounding_mode);
+                                    if (single_to_real(fp_result) != real_result)
+                                        exception_flags[0] = 1'b1;
                                 end
                                 default: begin end
                             endcase
+                            case (function7)
+                                7'b0000000: real_result = real_a + real_b;
+                                7'b0000100: real_result = real_a - real_b;
+                                7'b0001000: real_result = real_a * real_b;
+                                7'b0001100: real_result = operand_b[30:0] == 0 ? 0.0 : real_a / real_b;
+                                7'b0101100: real_result = sign_a ? 0.0 : $sqrt(real_a);
+                                default: begin end
+                            endcase
+                            if (function7 <= 7'b0101100 &&
+                                function7 != 7'b0010000 &&
+                                !nan_a && !nan_b && !infinity_a && !infinity_b &&
+                                fp_result[30:23] != 8'hff) begin
+                                if (single_to_real(fp_result) != real_result)
+                                    exception_flags[0] = 1'b1;
+                                if (fp_result[30:23] == 0 && exception_flags[0])
+                                    exception_flags[1] = 1'b1;
+                            end
+                            if ((function7 == 7'b0000000 ||
+                                 function7 == 7'b0000100 ||
+                                 function7 == 7'b0001000 ||
+                                 function7 == 7'b0001100 ||
+                                 function7 == 7'b0101100) &&
+                                !nan_a && !nan_b && !infinity_a && !infinity_b &&
+                                (real_result > 3.402823466e38 ||
+                                 real_result < -3.402823466e38)) begin
+                                exception_flags[2] = 1'b1;
+                                exception_flags[0] = 1'b1;
+                            end
                             result = fp_result;
                         end
                     end
@@ -351,6 +414,9 @@ module rv32f_unit (
                                               ((real_a > real_b) ? real_a : real_b);
                                 result = real_to_single(real_result, 3'b000);
                             end
+                            if ((nan_a && !operand_a[22]) ||
+                                (nan_b && !operand_b[22]))
+                                exception_flags[4] = 1'b1;
                         end
                     end
                     7'b1010000: begin // FEQ.S, FLT.S, FLE.S
@@ -365,6 +431,11 @@ module rv32f_unit (
                                     default: begin end
                                 endcase
                             end
+                            if ((function3 != 3'b000 && (nan_a || nan_b)) ||
+                                (function3 == 3'b000 &&
+                                 ((nan_a && !operand_a[22]) ||
+                                  (nan_b && !operand_b[22]))))
+                                exception_flags[4] = 1'b1;
                         end
                     end
                     7'b1110000: begin // FMV.X.W and FCLASS.S
@@ -385,7 +456,7 @@ module rv32f_unit (
                 endcase
             end
             7'b1000011, 7'b1000111, 7'b1001011, 7'b1001111: begin
-                if (rounding_mode <= 3'b100) begin
+                if (instruction[26:25] == 2'b00 && rounding_mode <= 3'b100) begin
                     recognized = 1'b1;
                     writes_fp_register = 1'b1;
                     case (opcode)
@@ -393,8 +464,10 @@ module rv32f_unit (
                             if (nan_a || nan_b || nan_c ||
                                 ((infinity_a || infinity_b) && (operand_a[30:0] == 0 || operand_b[30:0] == 0)) ||
                                 ((infinity_a || infinity_b) && infinity_c &&
-                                 ((sign_a ^ sign_b) != (opcode == 7'b1001011 ? !sign_c : sign_c))))
+                                 ((sign_a ^ sign_b) != sign_c))) begin
                                 fp_result = quiet_nan();
+                                exception_flags[4] = !nan_a && !nan_b && !nan_c;
+                            end
                             else if (infinity_a || infinity_b) fp_result = {sign_a ^ sign_b, 8'hff, 23'b0};
                             else if (infinity_c) fp_result = {sign_c, 8'hff, 23'b0};
                             else fp_result = real_to_single((real_a * real_b) + real_c, rounding_mode);
@@ -404,7 +477,10 @@ module rv32f_unit (
                                 ((infinity_a || infinity_b) &&
                                  (operand_a[30:0] == 0 || operand_b[30:0] == 0)) ||
                                 ((infinity_a || infinity_b) && infinity_c &&
-                                 ((sign_a ^ sign_b) == sign_c))) fp_result = quiet_nan();
+                                 ((sign_a ^ sign_b) == sign_c))) begin
+                                fp_result = quiet_nan();
+                                exception_flags[4] = !nan_a && !nan_b && !nan_c;
+                            end
                             else if (infinity_a || infinity_b) fp_result = {sign_a ^ sign_b, 8'hff, 23'b0};
                             else if (infinity_c) fp_result = {!sign_c, 8'hff, 23'b0};
                             else fp_result = real_to_single((real_a * real_b) - real_c, rounding_mode);
@@ -414,7 +490,10 @@ module rv32f_unit (
                                 ((infinity_a || infinity_b) &&
                                  (operand_a[30:0] == 0 || operand_b[30:0] == 0)) ||
                                 ((infinity_a || infinity_b) && infinity_c &&
-                                 ((sign_a ^ sign_b) == sign_c))) fp_result = quiet_nan();
+                                 ((sign_a ^ sign_b) == sign_c))) begin
+                                fp_result = quiet_nan();
+                                exception_flags[4] = !nan_a && !nan_b && !nan_c;
+                            end
                             else if (infinity_a || infinity_b) fp_result = {!(sign_a ^ sign_b), 8'hff, 23'b0};
                             else if (infinity_c) fp_result = {sign_c, 8'hff, 23'b0};
                             else fp_result = real_to_single(-((real_a * real_b) - real_c), rounding_mode);
@@ -424,22 +503,47 @@ module rv32f_unit (
                                 ((infinity_a || infinity_b) &&
                                  (operand_a[30:0] == 0 || operand_b[30:0] == 0)) ||
                                 ((infinity_a || infinity_b) && infinity_c &&
-                                 ((sign_a ^ sign_b) != sign_c))) fp_result = quiet_nan();
+                                 ((sign_a ^ sign_b) != sign_c))) begin
+                                fp_result = quiet_nan();
+                                exception_flags[4] = !nan_a && !nan_b && !nan_c;
+                            end
                             else if (infinity_a || infinity_b) fp_result = {!(sign_a ^ sign_b), 8'hff, 23'b0};
                             else if (infinity_c) fp_result = {!sign_c, 8'hff, 23'b0};
                             else fp_result = real_to_single(-((real_a * real_b) + real_c), rounding_mode);
                         end
                         default: begin end
                     endcase
+                    if (!nan_a && !nan_b && !nan_c && !infinity_a &&
+                        !infinity_b && !infinity_c) begin
+                        case (opcode)
+                            7'b1000011: real_result = (real_a * real_b) + real_c;
+                            7'b1000111: real_result = (real_a * real_b) - real_c;
+                            7'b1001011: real_result = -((real_a * real_b) - real_c);
+                            7'b1001111: real_result = -((real_a * real_b) + real_c);
+                            default: real_result = 0.0;
+                        endcase
+                        if (real_result > 3.402823466e38 ||
+                            real_result < -3.402823466e38) begin
+                            exception_flags[2] = 1'b1;
+                            exception_flags[0] = 1'b1;
+                        end else if (fp_result[30:23] != 8'hff) begin
+                            if (single_to_real(fp_result) != real_result)
+                                exception_flags[0] = 1'b1;
+                            if (fp_result[30:23] == 0 && exception_flags[0])
+                                exception_flags[1] = 1'b1;
+                        end
+                    end
                     result = fp_result;
                 end
             end
             default: begin end
         endcase
 
+        // An illegal FP encoding must not report flags or a destination write.
         if (!recognized) begin
             writes_fp_register = 1'b0;
             result = 32'b0;
+            exception_flags = 5'b0;
         end
     end
 endmodule

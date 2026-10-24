@@ -15,13 +15,20 @@ module rv32i_memory #(
 
     input  logic [31:0] instruction_address,
     output logic [31:0] instruction,
+    output logic        instruction_access_fault,
+    output logic        instruction_access_fault_next_halfword,
 
     input  logic [31:0] data_address,
     input  logic [31:0] data_write_data,
     input  logic        data_write_enable,
     input  logic [3:0]  data_write_mask,
+    input  logic [31:0] data_write_data_next_word,
+    input  logic        data_write_enable_next_word,
+    input  logic [3:0]  data_write_mask_next_word,
     output logic [31:0] data_read_data,
-    output logic        data_access_fault
+    output logic [31:0] data_read_data_next_word,
+    output logic        data_access_fault,
+    output logic        data_access_fault_next_word
 );
     localparam integer WORD_COUNT   = MEMORY_BYTES / 4;
 
@@ -44,6 +51,9 @@ module rv32i_memory #(
     // Data reads return their containing word so LB can select a byte.
     always_comb begin
         instruction = 32'b0;
+        instruction_access_fault = (instruction_address >= MEMORY_BYTES);
+        instruction_access_fault_next_halfword =
+            (instruction_address >= MEMORY_BYTES - 2);
         if (instruction_address[0] == 1'b0 && instruction_address < MEMORY_BYTES) begin
             if (instruction_address[1] == 1'b0) begin
                 instruction = words[instruction_address[22:2]];
@@ -60,11 +70,16 @@ module rv32i_memory #(
 
     always_comb begin
         data_read_data = 32'b0;
+        data_read_data_next_word = 32'b0;
         data_access_fault = (data_address >= MEMORY_BYTES);
+        data_access_fault_next_word = (data_address >= MEMORY_BYTES - 4);
         // Data reads return the containing word; the CPU selects and extends
         // the addressed byte or halfword.
         if (data_address < MEMORY_BYTES) begin
             data_read_data = words[data_address[22:2]];
+        end
+        if (data_address < MEMORY_BYTES - 4) begin
+            data_read_data_next_word = words[data_address[22:2] + 1'b1];
         end
     end
 
@@ -75,6 +90,15 @@ module rv32i_memory #(
             for (integer lane = 0; lane < 4; lane = lane + 1) begin
                 if (data_write_mask[lane]) begin
                     words[data_address[22:2]][lane * 8 +: 8] <= data_write_data[lane * 8 +: 8];
+                end
+            end
+            if (!reset && data_write_enable_next_word &&
+                data_address < MEMORY_BYTES - 4) begin
+                for (integer lane = 0; lane < 4; lane = lane + 1) begin
+                    if (data_write_mask_next_word[lane]) begin
+                        words[data_address[22:2] + 1'b1][lane * 8 +: 8]
+                            <= data_write_data_next_word[lane * 8 +: 8];
+                    end
                 end
             end
         end

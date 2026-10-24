@@ -1,6 +1,4 @@
-// Decompress the RV32C integer instruction subset into canonical RV32I words.
-// Floating-point compressed encodings are reported as illegal because this
-// core does not implement F/D floating-point state or execution.
+// Expand the implemented RV32C integer subset and compressed F/D memory forms.
 module rv32c_decompressor (
     input  logic [31:0] fetched_instruction,
     output logic [31:0] decoded_instruction,
@@ -96,7 +94,9 @@ module rv32c_decompressor (
         illegal_compressed = 1'b0;
 
         if (is_compressed) begin
-            // Default to an illegal base opcode; each valid encoding replaces it.
+            // Prime-register and stack-relative FP loads/stores expand to the
+            // same base FLW/FSW/FLD/FSD forms used by the regular decoder.
+            // Other valid compressed encodings replace this illegal default.
             decoded_instruction = 32'b0;
             case ({function3, quadrant})
                 5'b00000: begin // C.ADDI4SPN
@@ -111,10 +111,32 @@ module rv32c_decompressor (
                                    compressed_instruction[6], 2'b00};
                     decoded_instruction = encode_i(immediate_i, prime_rs1, 3'b010, prime_rd, 7'h03);
                 end
+                5'b00100: begin // C.FLD
+                    immediate_i = {4'b0, compressed_instruction[6:5],
+                                   compressed_instruction[12:10], 3'b000};
+                    decoded_instruction = encode_i(immediate_i, prime_rs1, 3'b011, prime_rd, 7'h07);
+                end
+                5'b01100: begin // C.FLW (RV32)
+                    immediate_i = {5'b0, compressed_instruction[5],
+                                   compressed_instruction[12:10], compressed_instruction[6], 2'b00};
+                    decoded_instruction = encode_i(immediate_i, prime_rs1, 3'b010, prime_rd, 7'h07);
+                end
                 5'b11000: begin // C.SW
                     immediate_s = {5'b0, compressed_instruction[5], compressed_instruction[12:10],
                                    compressed_instruction[6], 2'b00};
                     decoded_instruction = encode_s(immediate_s, prime_rs2, prime_rs1);
+                end
+                5'b10100: begin // C.FSD
+                    immediate_s = {4'b0, compressed_instruction[6:5],
+                                   compressed_instruction[12:10], 3'b000};
+                    decoded_instruction = {immediate_s[11:5], prime_rs2, prime_rs1,
+                                           3'b011, immediate_s[4:0], 7'h27};
+                end
+                5'b11100: begin // C.FSW (RV32)
+                    immediate_s = {5'b0, compressed_instruction[5],
+                                   compressed_instruction[12:10], compressed_instruction[6], 2'b00};
+                    decoded_instruction = {immediate_s[11:5], prime_rs2, prime_rs1,
+                                           3'b010, immediate_s[4:0], 7'h27};
                 end
 
                 5'b00001: begin // C.ADDI and C.NOP; rd=x0 forms are hints
@@ -210,6 +232,17 @@ module rv32c_decompressor (
                     if (rd == 5'd0) illegal_compressed = 1'b1;
                     else decoded_instruction = encode_i(immediate_i, 5'd2, 3'b010, rd, 7'h03);
                 end
+                5'b00110: begin // C.FLDSP
+                    immediate_i = {3'b0, compressed_instruction[4:2], compressed_instruction[12],
+                                   compressed_instruction[6:5], 3'b000};
+                    decoded_instruction = encode_i(immediate_i, 5'd2, 3'b011, rd, 7'h07);
+                end
+                5'b01110: begin // C.FLWSP (RV32)
+                    immediate_i = {4'b0, compressed_instruction[3:2], compressed_instruction[12],
+                                   compressed_instruction[6:4], 2'b00};
+                    if (rd == 5'd0) illegal_compressed = 1'b1;
+                    else decoded_instruction = encode_i(immediate_i, 5'd2, 3'b010, rd, 7'h07);
+                end
                 5'b10010: begin // C.JR, C.MV, C.EBREAK, C.JALR, and C.ADD
                     if (!compressed_instruction[12]) begin
                         if (rs2 == 5'd0) begin
@@ -227,6 +260,16 @@ module rv32c_decompressor (
                 5'b11010: begin // C.SWSP
                     immediate_s = {4'b0, compressed_instruction[8:7], compressed_instruction[12:9], 2'b00};
                     decoded_instruction = encode_s(immediate_s, rs2, 5'd2);
+                end
+                5'b10110: begin // C.FSDSP
+                    immediate_s = {3'b0, compressed_instruction[9:7], compressed_instruction[12:10], 3'b000};
+                    decoded_instruction = {immediate_s[11:5], rs2, 5'd2,
+                                           3'b011, immediate_s[4:0], 7'h27};
+                end
+                5'b11110: begin // C.FSWSP (RV32)
+                    immediate_s = {4'b0, compressed_instruction[8:7], compressed_instruction[12:9], 2'b00};
+                    decoded_instruction = {immediate_s[11:5], rs2, 5'd2,
+                                           3'b010, immediate_s[4:0], 7'h27};
                 end
                 default: illegal_compressed = 1'b1;
             endcase

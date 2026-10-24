@@ -1,4 +1,4 @@
-// Selected RV32 Zbb/Zbs operations requested for the teaching CPU.
+// Selected RV32 Zba/Zbb/Zbs/Zicond operations for the teaching CPU.
 // This module is combinational and reports unrecognized encodings to the
 // ordinary integer decoder so standard instructions keep their normal path.
 module rv32i_bitmanip (
@@ -63,6 +63,11 @@ module rv32i_bitmanip (
         case (opcode)
             7'b0110011: begin // Register-register Zbb and Zbs operations
                 case ({function7, function3})
+                    {7'b0010000, 3'b010}: begin recognized = 1'b1; result = (operand_a << 1) + operand_b; end // SH1ADD
+                    {7'b0010000, 3'b100}: begin recognized = 1'b1; result = (operand_a << 2) + operand_b; end // SH2ADD
+                    {7'b0010000, 3'b110}: begin recognized = 1'b1; result = (operand_a << 3) + operand_b; end // SH3ADD
+                    {7'b0000111, 3'b101}: begin recognized = 1'b1; result = (operand_b == 0) ? 32'b0 : operand_a; end // CZERO.EQZ
+                    {7'b0000111, 3'b111}: begin recognized = 1'b1; result = (operand_b != 0) ? 32'b0 : operand_a; end // CZERO.NEZ
                     {7'b0110000, 3'b001}: begin
                         recognized = 1'b1;
                         result = (operand_a << register_index) | (operand_a >> (32 - register_index)); // ROL

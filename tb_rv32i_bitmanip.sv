@@ -107,7 +107,29 @@ module tb_rv32i_bitmanip;
         instruction = encode_r(7'b0000100, 0, 1, 3'b100, 3, 7'h33); // zext.h
         check_result(32'h0000_ef00);
 
-        $display("Zbb/Zbs bitmanip smoke test passed");
+        operand_a = 32'h1234_5678;
+        operand_b = 32'd7;
+        instruction = encode_r(7'b0010000, 2, 1, 3'b010, 3, 7'h33); // sh1add
+        check_result(32'h2468_acf7);
+        instruction = encode_r(7'b0010000, 2, 1, 3'b100, 3, 7'h33); // sh2add
+        check_result(32'h48d1_59e7);
+        instruction = encode_r(7'b0010000, 2, 1, 3'b110, 3, 7'h33); // sh3add
+        check_result(32'h91a2_b3c7);
+
+        operand_b = 0;
+        instruction = encode_r(7'b0000111, 0, 1, 3'b101, 3, 7'h33); // czero.eqz, zero condition
+        check_result(32'b0);
+        operand_b = 1;
+        instruction = encode_r(7'b0000111, 1, 1, 3'b101, 3, 7'h33); // czero.eqz, nonzero condition
+        check_result(32'h1234_5678);
+        operand_b = 0;
+        instruction = encode_r(7'b0000111, 0, 1, 3'b111, 3, 7'h33); // czero.nez, zero condition
+        check_result(32'h1234_5678);
+        operand_b = 1;
+        instruction = encode_r(7'b0000111, 1, 1, 3'b111, 3, 7'h33); // czero.nez, nonzero condition
+        check_result(32'b0);
+
+        $display("Zba/Zbb/Zbs/Zicond bitmanip smoke test passed");
         $finish;
     end
 endmodule

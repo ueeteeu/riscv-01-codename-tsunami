@@ -7,10 +7,16 @@ module tb_rv32f;
     logic [31:0] instruction;
     logic [31:0] data_address;
     logic [31:0] data_write_data;
+    logic [31:0] data_write_data_next_word;
     logic data_write_enable;
+    logic data_write_enable_next_word;
     logic [3:0] data_write_mask;
+    logic [3:0] data_write_mask_next_word;
     logic [31:0] data_read_data;
+    logic [31:0] data_read_data_next_word;
     logic data_access_fault;
+    logic data_access_fault_next_word;
+    logic [2:0] external_interrupts = 3'b000;
     logic [31:0] program_counter;
     logic illegal_instruction;
 
@@ -25,8 +31,14 @@ module tb_rv32f;
         .data_write_data(data_write_data),
         .data_write_enable(data_write_enable),
         .data_write_mask(data_write_mask),
+        .data_write_data_next_word(data_write_data_next_word),
+        .data_write_enable_next_word(data_write_enable_next_word),
+        .data_write_mask_next_word(data_write_mask_next_word),
         .data_read_data(data_read_data),
+        .data_read_data_next_word(data_read_data_next_word),
         .data_access_fault(data_access_fault),
+        .data_access_fault_next_word(data_access_fault_next_word),
+        .external_interrupts(external_interrupts),
         .program_counter(program_counter),
         .illegal_instruction(illegal_instruction)
     );
@@ -40,8 +52,13 @@ module tb_rv32f;
         .data_write_data(data_write_data),
         .data_write_enable(data_write_enable),
         .data_write_mask(data_write_mask),
+        .data_write_data_next_word(data_write_data_next_word),
+        .data_write_enable_next_word(data_write_enable_next_word),
+        .data_write_mask_next_word(data_write_mask_next_word),
         .data_read_data(data_read_data),
-        .data_access_fault(data_access_fault)
+        .data_read_data_next_word(data_read_data_next_word),
+        .data_access_fault(data_access_fault),
+        .data_access_fault_next_word(data_access_fault_next_word)
     );
 
     function automatic logic [31:0] encode_i(
@@ -164,30 +181,30 @@ module tb_rv32f;
         #11 reset = 1'b0;
         repeat (50) @(negedge clk);
 
-        if (cpu.floating_registers[4] !== 32'h4070_0000 ||
-            cpu.floating_registers[5] !== 32'h3f40_0000 ||
-            cpu.floating_registers[6] !== 32'h4058_0000 ||
-            cpu.floating_registers[7] !== 32'h3fc0_0000 ||
-            cpu.floating_registers[8] !== 32'h3fc0_0000 ||
-            cpu.floating_registers[9] !== 32'h3fc0_0000 ||
-            cpu.floating_registers[10] !== 32'hbfc0_0000 ||
-            cpu.floating_registers[11] !== 32'hbfc0_0000 ||
-            cpu.floating_registers[12] !== 32'h3fc0_0000 ||
-            cpu.floating_registers[13] !== 32'h4010_0000 ||
-            cpu.floating_registers[14] !== 32'h4000_0000 ||
-            cpu.floating_registers[15] !== 32'h4000_0000 ||
-            cpu.floating_registers[16] !== 32'h3fc0_0000 ||
-            cpu.floating_registers[17] !== 32'h409c_0000 ||
-            cpu.floating_registers[18] !== 32'h3ff0_0000 ||
-            cpu.floating_registers[19] !== 32'hbff0_0000 ||
-            cpu.floating_registers[20] !== 32'hc09c_0000 ||
-            cpu.floating_registers[24] !== 32'h3f80_0000 ||
-            cpu.floating_registers[25] !== 32'h3f80_0001 ||
-            cpu.floating_registers[29] !== 32'h3f80_0001 ||
-            cpu.floating_registers[30] !== 32'h3f80_0000 ||
-            cpu.floating_registers[31] !== 32'h3f80_0000 ||
-            cpu.floating_registers[27] !== 32'h4010_0000 ||
-            cpu.floating_registers[28] !== 32'h4010_0000 ||
+        if (cpu.floating_registers[4] !== 64'hffff_ffff_4070_0000 ||
+            cpu.floating_registers[5] !== 64'hffff_ffff_3f40_0000 ||
+            cpu.floating_registers[6] !== 64'hffff_ffff_4058_0000 ||
+            cpu.floating_registers[7] !== 64'hffff_ffff_3fc0_0000 ||
+            cpu.floating_registers[8] !== 64'hffff_ffff_3fc0_0000 ||
+            cpu.floating_registers[9] !== 64'hffff_ffff_3fc0_0000 ||
+            cpu.floating_registers[10] !== 64'hffff_ffff_bfc0_0000 ||
+            cpu.floating_registers[11] !== 64'hffff_ffff_bfc0_0000 ||
+            cpu.floating_registers[12] !== 64'hffff_ffff_3fc0_0000 ||
+            cpu.floating_registers[13] !== 64'hffff_ffff_4010_0000 ||
+            cpu.floating_registers[14] !== 64'hffff_ffff_4000_0000 ||
+            cpu.floating_registers[15] !== 64'hffff_ffff_4000_0000 ||
+            cpu.floating_registers[16] !== 64'hffff_ffff_3fc0_0000 ||
+            cpu.floating_registers[17] !== 64'hffff_ffff_409c_0000 ||
+            cpu.floating_registers[18] !== 64'hffff_ffff_3ff0_0000 ||
+            cpu.floating_registers[19] !== 64'hffff_ffff_bff0_0000 ||
+            cpu.floating_registers[20] !== 64'hffff_ffff_c09c_0000 ||
+            cpu.floating_registers[24] !== 64'hffff_ffff_3f80_0000 ||
+            cpu.floating_registers[25] !== 64'hffff_ffff_3f80_0001 ||
+            cpu.floating_registers[29] !== 64'hffff_ffff_3f80_0001 ||
+            cpu.floating_registers[30] !== 64'hffff_ffff_3f80_0000 ||
+            cpu.floating_registers[31] !== 64'hffff_ffff_3f80_0000 ||
+            cpu.floating_registers[27] !== 64'hffff_ffff_4010_0000 ||
+            cpu.floating_registers[28] !== 64'hffff_ffff_4010_0000 ||
             memory.words[66] !== 32'h409c_0000 ||
             cpu.registers[2] !== 32'd2 || cpu.registers[3] !== 32'd2 ||
             cpu.registers[4] !== 32'h3fc0_0000 || cpu.registers[5] !== 32'd1 ||

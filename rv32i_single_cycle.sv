@@ -1,21 +1,29 @@
-// A small, educational single-cycle RV32 CPU with integer, M/A, the listed
-// simulation-only RV32F subset, selected Zbb/Zbs, and machine-mode support.
+// Educational single-cycle RV32 core with integer, M/A, simulation-oriented
+// F/D, compressed FP memory operations, bit manipulation, and M/S-mode support.
 //
 // Instruction memory returns a halfword-aligned 32-bit fetch window in the
-// same cycle. Data memory is word-wide with byte write enables.
+// same cycle. Data memory uses word lanes; adjacent-word ports support FLD/FSD.
 module rv32i_single_cycle (
     input  logic        clk,
     input  logic        reset,
 
     output logic [31:0] instruction_address,
     input  logic [31:0] instruction,
+    input  logic        instruction_access_fault,
+    input  logic        instruction_access_fault_next_halfword,
 
     output logic [31:0] data_address,
     output logic [31:0] data_write_data,
     output logic        data_write_enable,
     output logic [3:0]  data_write_mask,
+    output logic [31:0] data_write_data_next_word,
+    output logic        data_write_enable_next_word,
+    output logic [3:0]  data_write_mask_next_word,
     input  logic [31:0] data_read_data,
+    input  logic [31:0] data_read_data_next_word,
     input  logic        data_access_fault,
+    input  logic        data_access_fault_next_word,
+    input  logic [2:0]  external_interrupts,
 
     output logic [31:0] program_counter,
     output logic        illegal_instruction
@@ -23,7 +31,7 @@ module rv32i_single_cycle (
     // The register file has 32 architectural registers. x0 is represented
     // by a constant read value and is never allowed to be written.
     logic [31:0] registers [0:31];
-    logic [31:0] floating_registers [0:31];
+    logic [63:0] floating_registers [0:31];
 
     logic [4:0]  rs1;
     logic [4:0]  rs2;
@@ -38,6 +46,17 @@ module rv32i_single_cycle (
     logic [31:0] floating_rs3_value;
     logic [31:0] floating_unit_operand_a;
     logic [31:0] floating_result;
+    logic [63:0] double_result;
+    logic [4:0]  floating_exception_flags;
+    logic [4:0]  double_exception_flags;
+    logic [2:0]  dynamic_rounding_mode;
+    logic [31:0] floating_csr_state;
+    logic [2:0]  fetch_pmp_size;
+    logic        fetch_pmp_denied;
+    logic [3:0]  data_pmp_size;
+    logic        data_pmp_read;
+    logic        data_pmp_write;
+    logic        data_pmp_denied;
 
     logic [31:0] immediate_i;
     logic [31:0] immediate_s;
@@ -51,6 +70,10 @@ module rv32i_single_cycle (
     logic        floating_register_write_enable;
     logic        floating_unit_recognized;
     logic        floating_result_to_fp;
+    logic        double_unit_recognized;
+    logic        double_result_to_fp;
+    logic        floating_flags_write_enable;
+    logic [4:0]  floating_flags_write_data;
     logic [11:0] csr_address;
     logic        csr_write_enable;
     logic [31:0] csr_write_data;
@@ -61,14 +84,20 @@ module rv32i_single_cycle (
     logic [31:0] trap_value;
     logic [31:0] trap_vector;
     logic        mret;
+    logic        sret;
     logic [31:0] mret_address;
+    logic [31:0] sret_address;
+    logic        interrupt_valid;
+    logic [31:0] interrupt_cause;
+    logic [1:0]  current_privilege;
     logic [31:0] csr_source_value;
     logic [31:0] csr_new_value;
+    logic        csr_write_attempt;
     logic [63:0] product_unsigned;
     logic signed [63:0] product_signed;
     logic signed [63:0] product_signed_unsigned;
     logic [31:0] shifted_load_data;
-    logic [31:0] floating_writeback_value;
+    logic [63:0] floating_writeback_value;
     logic        bitmanip_recognized;
     logic [31:0] bitmanip_result;
     logic [31:0] decoded_instruction;
@@ -94,7 +123,25 @@ module rv32i_single_cycle (
         .trap_value(trap_value),
         .trap_vector(trap_vector),
         .mret(mret),
-        .mret_address(mret_address)
+        .mret_address(mret_address),
+        .sret(sret),
+        .sret_address(sret_address),
+        .external_interrupts(external_interrupts),
+        .interrupt_valid(interrupt_valid),
+        .interrupt_cause(interrupt_cause),
+        .current_privilege(current_privilege),
+        .floating_flags_set(floating_flags_write_enable),
+        .floating_flags(floating_flags_write_data),
+        .dynamic_rounding_mode(dynamic_rounding_mode),
+        .floating_csr_state(floating_csr_state),
+        .fetch_address(program_counter),
+        .fetch_size(fetch_pmp_size),
+        .fetch_pmp_denied(fetch_pmp_denied),
+        .data_access_address(data_address),
+        .data_access_size(data_pmp_size),
+        .data_access_read(data_pmp_read),
+        .data_access_write(data_pmp_write),
+        .data_pmp_denied(data_pmp_denied)
     );
 
     rv32i_bitmanip bitmanip_unit (
@@ -112,7 +159,22 @@ module rv32i_single_cycle (
         .operand_c(floating_rs3_value),
         .recognized(floating_unit_recognized),
         .writes_fp_register(floating_result_to_fp),
-        .result(floating_result)
+        .result(floating_result),
+        .dynamic_rounding_mode(dynamic_rounding_mode),
+        .exception_flags(floating_exception_flags)
+    );
+
+    rv32d_unit double_precision_unit (
+        .instruction(decoded_instruction),
+        .operand_a(floating_registers[rs1]),
+        .operand_b(floating_registers[rs2]),
+        .operand_c(floating_registers[decoded_instruction[31:27]]),
+        .integer_operand(rs1_value),
+        .dynamic_rounding_mode(dynamic_rounding_mode),
+        .recognized(double_unit_recognized),
+        .writes_fp_register(double_result_to_fp),
+        .result(double_result),
+        .exception_flags(double_exception_flags)
     );
 
     rv32c_decompressor compressed_decoder (
@@ -141,6 +203,41 @@ module rv32i_single_cycle (
         endcase
     end
 
+    always_comb begin
+        fetch_pmp_size = (instruction[1:0] == 2'b11) ? 3'd4 : 3'd2;
+        data_pmp_size = 4'd0;
+        data_pmp_read = 1'b0;
+        data_pmp_write = 1'b0;
+        case (decoded_instruction[6:0])
+            7'b0000011, 7'b0000111: begin
+                data_pmp_read = 1'b1;
+                case (decoded_instruction[14:12])
+                    3'b000, 3'b100: data_pmp_size = 4'd1;
+                    3'b001, 3'b101: data_pmp_size = 4'd2;
+                    3'b010: data_pmp_size = 4'd4;
+                    3'b011: data_pmp_size = 4'd8;
+                    default: data_pmp_size = 4'd0;
+                endcase
+            end
+            7'b0100011, 7'b0100111: begin
+                data_pmp_write = 1'b1;
+                case (decoded_instruction[14:12])
+                    3'b000: data_pmp_size = 4'd1;
+                    3'b001: data_pmp_size = 4'd2;
+                    3'b010: data_pmp_size = 4'd4;
+                    3'b011: data_pmp_size = 4'd8;
+                    default: data_pmp_size = 4'd0;
+                endcase
+            end
+            7'b0101111: begin
+                data_pmp_read = 1'b1;
+                data_pmp_write = 1'b1;
+                data_pmp_size = 4'd4;
+            end
+            default: begin end
+        endcase
+    end
+
     // These fields occupy the same bit positions in the standard RISC-V
     // instruction formats, so they can be decoded directly from the word.
     always_comb begin
@@ -151,8 +248,9 @@ module rv32i_single_cycle (
         rs2    = decoded_instruction[24:20];
         funct7 = decoded_instruction[31:25];
 
-        // Each immediate is assembled separately because the ISA rearranges
-        // immediate bits in branch, store, and jump instruction formats.
+        // Reconstruct I/S/B/U/J-format immediates. I and S sign-extend 12 bits;
+        // B and J also restore their implicit low zero bit, while U shifts the
+        // encoded upper 20 bits into position.
         immediate_i = {{20{decoded_instruction[31]}}, decoded_instruction[31:20]};
         immediate_s = {{20{decoded_instruction[31]}}, decoded_instruction[31:25], decoded_instruction[11:7]};
         immediate_b = {{19{decoded_instruction[31]}}, decoded_instruction[31], decoded_instruction[7],
@@ -190,6 +288,11 @@ module rv32i_single_cycle (
         register_write_enable = 1'b0;
         floating_register_write_enable = 1'b0;
         floating_writeback_value = 32'b0;
+        data_write_data_next_word = 32'b0;
+        data_write_enable_next_word = 1'b0;
+        data_write_mask_next_word = 4'b0;
+        floating_flags_write_enable = 1'b0;
+        floating_flags_write_data = 5'b0;
         data_write_data       = rs2_value;
         data_write_enable     = 1'b0;
         data_write_mask       = 4'b0000;
@@ -199,10 +302,12 @@ module rv32i_single_cycle (
         csr_write_data        = 32'b0;
         csr_source_value      = rs1_value;
         csr_new_value         = 32'b0;
+        csr_write_attempt    = 1'b0;
         trap_valid            = 1'b0;
         trap_cause            = 32'b0;
         trap_value            = 32'b0;
         mret                  = 1'b0;
+        sret                  = 1'b0;
             reservation_set       = 1'b0;
             reservation_clear     = 1'b0;
 
@@ -354,10 +459,21 @@ module rv32i_single_cycle (
             end
 
             7'b0000111: begin // FLW
-                if (funct3 == 3'b010) begin
+                if (funct3 == 3'b010) begin // FLW
                     if (data_address[1:0] == 2'b00) begin
                         floating_register_write_enable = 1'b1;
-                        floating_writeback_value = data_read_data;
+                        floating_writeback_value = {32'hffff_ffff, data_read_data};
+                    end else begin
+                        trap_valid = 1'b1;
+                        trap_cause = 32'd4;
+                        trap_value = data_address;
+                    end
+                end else if (funct3 == 3'b011) begin // FLD
+                    // The aligned 64-bit value is assembled little-endian from
+                    // the addressed word and the following word.
+                    if (data_address[2:0] == 3'b000) begin
+                        floating_register_write_enable = 1'b1;
+                        floating_writeback_value = {data_read_data_next_word, data_read_data};
                     end else begin
                         trap_valid = 1'b1;
                         trap_cause = 32'd4;
@@ -379,19 +495,48 @@ module rv32i_single_cycle (
                         trap_cause = 32'd6;
                         trap_value = data_address;
                     end
+                end else if (funct3 == 3'b011) begin // FSD
+                    if (data_address[2:0] == 3'b000) begin
+                        // Split the FP register into the two little-endian
+                        // memory words; both lanes commit on this clock edge.
+                        data_write_enable = 1'b1;
+                        data_write_mask = 4'b1111;
+                        data_write_data = floating_registers[rs2][31:0];
+                        data_write_enable_next_word = 1'b1;
+                        data_write_mask_next_word = 4'b1111;
+                        data_write_data_next_word = floating_registers[rs2][63:32];
+                    end else begin
+                        trap_valid = 1'b1;
+                        trap_cause = 32'd6;
+                        trap_value = data_address;
+                    end
                 end else begin
                     illegal_instruction = 1'b1;
                 end
             end
 
             7'b1010011, 7'b1000011, 7'b1000111, 7'b1001011, 7'b1001111: begin
-                if (floating_unit_recognized) begin
-                    if (floating_result_to_fp) begin
+                if (floating_unit_recognized || double_unit_recognized) begin
+                    if (double_unit_recognized) begin
+                        floating_flags_write_enable = |double_exception_flags;
+                        floating_flags_write_data = double_exception_flags;
+                        if (double_result_to_fp) begin
+                            floating_register_write_enable = 1'b1;
+                            floating_writeback_value = double_result;
+                        end else begin
+                            register_write_enable = 1'b1;
+                            writeback_value = double_result[31:0];
+                        end
+                    end else if (floating_result_to_fp) begin
+                        floating_flags_write_enable = |floating_exception_flags;
+                        floating_flags_write_data = floating_exception_flags;
                         floating_register_write_enable = 1'b1;
-                        floating_writeback_value = floating_result;
+                        floating_writeback_value = {32'hffff_ffff, floating_result};
                     end else begin
                         register_write_enable = 1'b1;
                         writeback_value = floating_result;
+                        floating_flags_write_enable = |floating_exception_flags;
+                        floating_flags_write_data = floating_exception_flags;
                     end
                 end else begin
                     illegal_instruction = 1'b1;
@@ -503,10 +648,14 @@ module rv32i_single_cycle (
                 case (funct3)
                     3'b000: begin
                         case (decoded_instruction[31:20])
-                            12'h000: begin // ECALL from machine mode
+                            12'h000: begin // ECALL
                                 if (rd == 0 && rs1 == 0) begin
                                     trap_valid = 1'b1;
-                                    trap_cause = 32'd11;
+                                    case (current_privilege)
+                                        2'b00: trap_cause = 32'd8;
+                                        2'b01: trap_cause = 32'd9;
+                                        default: trap_cause = 32'd11;
+                                    endcase
                                 end else illegal_instruction = 1'b1;
                             end
                             12'h001: begin // EBREAK
@@ -519,19 +668,30 @@ module rv32i_single_cycle (
                                 if (rd != 0 || rs1 != 0) illegal_instruction = 1'b1;
                             end
                             12'h302: begin // MRET
-                                if (rd == 0 && rs1 == 0) begin
+                                if (rd == 0 && rs1 == 0 && current_privilege == 2'b11) begin
                                     mret = 1'b1;
                                     next_pc = mret_address;
+                                end else illegal_instruction = 1'b1;
+                            end
+                            12'h102: begin // SRET
+                                if (rd == 0 && rs1 == 0 && current_privilege >= 2'b01) begin
+                                    sret = 1'b1;
+                                    next_pc = sret_address;
                                 end else illegal_instruction = 1'b1;
                             end
                             default: illegal_instruction = 1'b1;
                         endcase
                     end
                     3'b001, 3'b010, 3'b011, 3'b101, 3'b110, 3'b111: begin
-                        if (csr_access_valid) begin
+                        csr_source_value = funct3[2] ? {27'b0, rs1} : rs1_value;
+                        csr_write_attempt = (funct3[1:0] == 2'b01) ||
+                                            ((funct3[1:0] == 2'b10 ||
+                                              funct3[1:0] == 2'b11) &&
+                                             csr_source_value != 0);
+                        if (csr_access_valid &&
+                            !(decoded_instruction[31:30] == 2'b11 && csr_write_attempt)) begin
                             register_write_enable = 1'b1;
                             writeback_value = csr_read_data;
-                            if (funct3[2]) csr_source_value = {27'b0, rs1};
                             case (funct3[1:0])
                                 2'b01: begin // CSRRW[I]
                                     csr_new_value = csr_source_value;
@@ -557,12 +717,30 @@ module rv32i_single_cycle (
             default: illegal_instruction = 1'b1;
         endcase
 
-        // Route unsupported encodings to machine mode and suppress their
-        // architectural side effects. Synchronous exceptions take PC priority.
-        if (illegal_compressed) begin
+        // Synchronous faults override normal execution; otherwise an enabled
+        // interrupt redirects the PC before the architectural state is updated.
+        if (instruction_access_fault === 1'b1 ||
+            (instruction[1:0] === 2'b11 &&
+             instruction_access_fault_next_halfword === 1'b1) ||
+            (!illegal_instruction && fetch_pmp_denied)) begin
+            trap_valid = 1'b1;
+            trap_cause = 32'd1;
+            trap_value = (instruction_access_fault === 1'b1) ?
+                         program_counter :
+                         ((instruction[1:0] === 2'b11 &&
+                           instruction_access_fault_next_halfword === 1'b1) ?
+                          program_counter + 32'd2 : program_counter);
+        end
+        if (illegal_compressed &&
+            instruction_access_fault !== 1'b1 &&
+            !(instruction[1:0] === 2'b11 &&
+              instruction_access_fault_next_halfword === 1'b1)) begin
             illegal_instruction = 1'b1;
         end
-        if (illegal_instruction) begin
+        if (illegal_instruction &&
+            instruction_access_fault !== 1'b1 &&
+            !(instruction[1:0] === 2'b11 &&
+              instruction_access_fault_next_halfword === 1'b1)) begin
             trap_valid = 1'b1;
             trap_cause = 32'd2;
             trap_value = is_compressed ? {16'b0, instruction[15:0]} : decoded_instruction;
@@ -573,17 +751,45 @@ module rv32i_single_cycle (
             trap_cause = 32'd5;
             trap_value = data_address;
         end
+        if (!illegal_instruction && data_pmp_denied && data_pmp_read) begin
+            trap_valid = 1'b1;
+            trap_cause = 32'd5;
+            trap_value = data_address;
+        end
+        if (!illegal_instruction && data_pmp_denied && data_pmp_write) begin
+            trap_valid = 1'b1;
+            trap_cause = 32'd7;
+            trap_value = data_address;
+        end
         if (!illegal_instruction && data_access_fault &&
             (opcode == 7'b0100011 || opcode == 7'b0100111)) begin
             trap_valid = 1'b1;
             trap_cause = 32'd7;
             trap_value = data_address;
         end
+        if (!illegal_instruction && opcode == 7'b0000111 && funct3 == 3'b011 &&
+            data_access_fault_next_word) begin
+            trap_valid = 1'b1;
+            trap_cause = 32'd5;
+            trap_value = data_address + 32'd4;
+        end
+        if (!illegal_instruction && opcode == 7'b0100111 && funct3 == 3'b011 &&
+            data_access_fault_next_word) begin
+            trap_valid = 1'b1;
+            trap_cause = 32'd7;
+            trap_value = data_address + 32'd4;
+        end
+        if (!trap_valid && !illegal_instruction && interrupt_valid) begin
+            trap_valid = 1'b1;
+            trap_cause = interrupt_cause;
+            trap_value = 32'b0;
+        end
         if (trap_valid) begin
             next_pc = trap_vector;
             register_write_enable = 1'b0;
             floating_register_write_enable = 1'b0;
             data_write_enable = 1'b0;
+            data_write_enable_next_word = 1'b0;
             csr_write_enable = 1'b0;
                 reservation_set = 1'b0;
                 reservation_clear = 1'b1;

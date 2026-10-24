@@ -1,4 +1,4 @@
-// Smoke test for the initial machine-mode privileged implementation.
+// Smoke test for machine-mode ECALL/MRET behavior.
 // Run with a SystemVerilog simulator after compiling the CPU, CSR block,
 // memory, and this testbench together.
 module tb_rv32i_privileged;
@@ -67,7 +67,6 @@ module tb_rv32i_privileged;
 
     initial begin
         // Configure mtvec, enable machine interrupts in mstatus, and ECALL.
-        // Interrupt delivery itself is not part of this first implementation.
         #1;
         memory.words[0]  = encode_i(12'd64, 5'd0, 3'b000, 5'd1, 7'h13); // addi x1,x0,64
         memory.words[1]  = encode_csr(12'h305, 5'd1, 3'b001, 5'd0);      // csrw mtvec,x1
@@ -95,8 +94,8 @@ module tb_rv32i_privileged;
         if (cpu.machine_csrs.mcause !== 32'd11 || cpu.machine_csrs.mepc !== 32'd20) begin
             $fatal(1, "Expected ECALL cause 11 and resumed mepc 20");
         end
-        if (cpu.machine_csrs.mstatus_mie !== 1'b1 ||
-            cpu.machine_csrs.mstatus_mpie !== 1'b1) begin
+        if (cpu.machine_csrs.mstatus[3] !== 1'b1 ||
+            cpu.machine_csrs.mstatus[7] !== 1'b1) begin
             $fatal(1, "Expected MRET to restore MIE and set MPIE");
         end
         if (illegal_instruction !== 1'b0) begin
