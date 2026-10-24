@@ -66,6 +66,9 @@ related platform docs that were provided with the task. The index is kept in
 platform, firmware, trace, and profile references so the material is easy to
 navigate while the RTL remains focused on the implemented RV32 subset.
 
+For the implemented CPU block diagram, RTL responsibilities, and memory
+connections, see [docs/architecture/CPU_LAYOUT.md](./docs/architecture/CPU_LAYOUT.md).
+
 The current codebase implements the core RV32 privileged and virtual-memory
 subset, while the firmware/platform references (including the UEFI and SBI
 material) are tracked as future integration work rather than a completed boot
@@ -129,6 +132,8 @@ instructions; they do not have independent hardware encodings.
 
 ## Source and tests
 
+- `rv32i_system.sv`: simulation integration top that connects the CPU to
+  behavioral memory and exposes clock/reset, timer, and interrupt inputs.
 - `rv32i_single_cycle.sv`: processor, decoder, and datapath.
 - `rv32i_memory.sv`: behavioral memory with byte-lane stores and adjacent-word
   data ports.
@@ -140,6 +145,8 @@ instructions; they do not have independent hardware encodings.
   counter, and FCSR state.
 - `rv32i_sv32_mmu.sv`: blocking Sv32 page-table walker and small TLB.
 - `rv32i_hex_display.sv`: optional multiplexed hexadecimal display.
+- `tb_rv32i_system.sv`: end-to-end smoke test for fetch, integer execution,
+  store, and load through the system wrapper.
 - `tb_*.sv`: focused tests for integer, atomic, counters/time, PMP, bit-manipulation, compressed
   decode/execution, RV32F/RV32D, FCSR, instruction/data access faults, machine
   traps/interrupts, delegated supervisor interrupts/traps, and Sv32
