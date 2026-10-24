@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 // Educational single-cycle RV32 core with integer, M/A, simulation-oriented
 // F/D, compressed FP memory operations, bit manipulation, M/S-mode, PMP, and
 // separately wired machine/supervisor interrupt-pending inputs.
@@ -5,6 +6,13 @@
 // Instruction/data address outputs are physical addresses; program_counter is
 // virtual when Sv32 is active. Instruction reads are same-cycle; data memory
 // uses word lanes with adjacent-word ports for FLD/FSD.
+=======
+// A small, educational single-cycle RV32 CPU with integer, M/A, selected
+// Zbb/Zbs, and initial machine-mode privileged instruction support.
+//
+// Instruction memory returns a halfword-aligned 32-bit fetch window in the
+// same cycle. Data memory is word-wide; this core supports LB and aligned LW/SW.
+>>>>>>> b6184187a2adc5d5114213cce2ba509a429c6955
 module rv32i_single_cycle (
     input  logic        clk,
     input  logic        reset,
@@ -122,7 +130,13 @@ module rv32i_single_cycle (
     logic [31:0] csr_source_value;
     logic [31:0] csr_new_value;
     logic        csr_write_attempt;
+<<<<<<< HEAD
     logic        instruction_retired;
+=======
+    logic [31:0] mret_address;
+    logic [31:0] csr_source_value;
+    logic [31:0] csr_new_value;
+>>>>>>> b6184187a2adc5d5114213cce2ba509a429c6955
     logic [63:0] product_unsigned;
     logic signed [63:0] product_signed;
     logic signed [63:0] product_signed_unsigned;
@@ -177,6 +191,7 @@ module rv32i_single_cycle (
         .data_access_size(data_pmp_size),
         .data_access_read(data_pmp_read),
         .data_access_write(data_pmp_write),
+<<<<<<< HEAD
         .data_pmp_denied(data_pmp_denied),
         .pte_access_address(pte_read_address),
         .pte_access_enable(pte_read_enable),
@@ -213,6 +228,10 @@ module rv32i_single_cycle (
         .pte_read_address(pte_read_address),
         .pte_read_data(pte_read_data),
         .pte_access_fault(pte_access_fault || pte_pmp_denied)
+=======
+        .data_pmp_denied(data_pmp_denied)
+        .mret_address(mret_address)
+>>>>>>> b6184187a2adc5d5114213cce2ba509a429c6955
     );
 
     rv32i_bitmanip bitmanip_unit (
@@ -330,6 +349,8 @@ module rv32i_single_cycle (
         // Reconstruct I/S/B/U/J-format immediates. I and S sign-extend 12 bits;
         // B and J also restore their implicit low zero bit, while U shifts the
         // encoded upper 20 bits into position.
+        // Each immediate is assembled separately because the ISA rearranges
+        // immediate bits in branch, store, and jump instruction formats.
         immediate_i = {{20{decoded_instruction[31]}}, decoded_instruction[31:20]};
         immediate_s = {{20{decoded_instruction[31]}}, decoded_instruction[31:25], decoded_instruction[11:7]};
         immediate_b = {{19{decoded_instruction[31]}}, decoded_instruction[31], decoded_instruction[7],
@@ -429,6 +450,14 @@ module rv32i_single_cycle (
                             writeback_value = 32'b0;
                         else writeback_value = $signed(rs1_value) % $signed(rs2_value);
                     end
+                    end
+                    {7'b0000001, 3'b101}: writeback_value = (rs2_value == 32'b0) ? 32'hffff_ffff : rs1_value / rs2_value; // DIVU
+                    {7'b0000001, 3'b110}: begin // REM, including architectural edge cases
+                        if (rs2_value == 32'b0) writeback_value = rs1_value;
+                        else if (rs1_value == 32'h8000_0000 && rs2_value == 32'hffff_ffff)
+                            writeback_value = 32'b0;
+                        else writeback_value = $signed(rs1_value) % $signed(rs2_value);
+                    end
                     {7'b0000001, 3'b111}: writeback_value = (rs2_value == 32'b0) ? rs1_value : rs1_value % rs2_value; // REMU
                     default: begin
                         register_write_enable = 1'b0;
@@ -470,6 +499,8 @@ module rv32i_single_cycle (
             end
 
             7'b0000011: begin // Integer loads
+            7'b0000011: begin // LB and LW; the data port returns the containing word
+                data_address = rs1_value + immediate_i;
                 case (funct3)
                     3'b000: begin // LB sign-extends the selected byte
                         register_write_enable = 1'b1;
@@ -690,7 +721,14 @@ module rv32i_single_cycle (
                     end else if (data_access_fault) begin
                         trap_valid = 1'b1;
                         trap_cause = (decoded_instruction[31:27] == 5'b00010) ? 32'd5 : 32'd7;
+<<<<<<< HEAD
                         trap_value = virtual_data_address;
+=======
+                        trap_value = data_address;
+                    data_address = rs1_value;
+                    if (funct3 != 3'b010) begin
+                        illegal_instruction = 1'b1;
+>>>>>>> b6184187a2adc5d5114213cce2ba509a429c6955
                     end else if (data_address[1:0] != 2'b00) begin
                         trap_valid = 1'b1;
                         trap_cause = (decoded_instruction[31:27] == 5'b00010) ? 32'd4 : 32'd6;
@@ -740,6 +778,10 @@ module rv32i_single_cycle (
                                         2'b01: trap_cause = 32'd9;
                                         default: trap_cause = 32'd11;
                                     endcase
+                            12'h000: begin // ECALL from machine mode
+                                if (rd == 0 && rs1 == 0) begin
+                                    trap_valid = 1'b1;
+                                    trap_cause = 32'd11;
                                 end else illegal_instruction = 1'b1;
                             end
                             12'h001: begin // EBREAK
@@ -753,6 +795,8 @@ module rv32i_single_cycle (
                             end
                             12'h302: begin // MRET
                                 if (rd == 0 && rs1 == 0 && current_privilege == 2'b11) begin
+                            12'h302: begin // MRET
+                                if (rd == 0 && rs1 == 0) begin
                                     mret = 1'b1;
                                     decoded_next_pc = mret_address;
                                 end else illegal_instruction = 1'b1;
@@ -786,6 +830,10 @@ module rv32i_single_cycle (
                             !(decoded_instruction[31:30] == 2'b11 && csr_write_attempt)) begin
                             register_write_enable = 1'b1;
                             writeback_value = csr_read_data;
+                        if (csr_access_valid) begin
+                            register_write_enable = 1'b1;
+                            writeback_value = csr_read_data;
+                            if (funct3[2]) csr_source_value = {27'b0, rs1};
                             case (funct3[1:0])
                                 2'b01: begin // CSRRW[I]
                                     csr_new_value = csr_source_value;
@@ -849,6 +897,12 @@ module rv32i_single_cycle (
             instruction_access_fault !== 1'b1 &&
             !(instruction[1:0] === 2'b11 &&
               instruction_access_fault_next_halfword === 1'b1)) begin
+        // Route unsupported encodings to machine mode and suppress their
+        // architectural side effects. Synchronous exceptions take PC priority.
+        if (illegal_compressed) begin
+            illegal_instruction = 1'b1;
+        end
+        if (illegal_instruction) begin
             trap_valid = 1'b1;
             trap_cause = 32'd2;
             trap_value = is_compressed ? {16'b0, instruction[15:0]} : decoded_instruction;
@@ -948,6 +1002,10 @@ module rv32i_single_cycle (
             floating_register_write_enable = 1'b0;
             data_write_enable = 1'b0;
             data_write_enable_next_word = 1'b0;
+        if (trap_valid) begin
+            next_pc = trap_vector;
+            register_write_enable = 1'b0;
+            data_write_enable = 1'b0;
             csr_write_enable = 1'b0;
                 reservation_set = 1'b0;
                 reservation_clear = 1'b1;

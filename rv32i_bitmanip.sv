@@ -1,4 +1,4 @@
-// Selected RV32 Zba/Zbb/Zbs/Zicond operations for the teaching CPU.
+// Selected RV32 Zbb/Zbs operations requested for the teaching CPU.
 // This module is combinational and reports unrecognized encodings to the
 // ordinary integer decoder so standard instructions keep their normal path.
 module rv32i_bitmanip (
@@ -63,11 +63,6 @@ module rv32i_bitmanip (
         case (opcode)
             7'b0110011: begin // Register-register Zbb and Zbs operations
                 case ({function7, function3})
-                    {7'b0010000, 3'b010}: begin recognized = 1'b1; result = (operand_a << 1) + operand_b; end // SH1ADD
-                    {7'b0010000, 3'b100}: begin recognized = 1'b1; result = (operand_a << 2) + operand_b; end // SH2ADD
-                    {7'b0010000, 3'b110}: begin recognized = 1'b1; result = (operand_a << 3) + operand_b; end // SH3ADD
-                    {7'b0000111, 3'b101}: begin recognized = 1'b1; result = (operand_b == 0) ? 32'b0 : operand_a; end // CZERO.EQZ
-                    {7'b0000111, 3'b111}: begin recognized = 1'b1; result = (operand_b != 0) ? 32'b0 : operand_a; end // CZERO.NEZ
                     {7'b0110000, 3'b001}: begin
                         recognized = 1'b1;
                         result = (operand_a << register_index) | (operand_a >> (32 - register_index)); // ROL
@@ -84,12 +79,6 @@ module rv32i_bitmanip (
                     {7'b0100100, 3'b001}: begin recognized = 1'b1; result = operand_a & ~(32'b1 << register_index); end // BCLR
                     {7'b0110100, 3'b001}: begin recognized = 1'b1; result = operand_a ^ (32'b1 << register_index); end // BINV
                     {7'b0100100, 3'b101}: begin recognized = 1'b1; result = (operand_a >> register_index) & 32'b1; end // BEXT
-                    {7'b0000100, 3'b100}: begin
-                        if (instruction[24:20] == 5'b0) begin
-                            recognized = 1'b1;
-                            result = {16'b0, operand_a[15:0]};
-                        end
-                    end // ZEXT.H (PACK with rs2=x0)
                     default: begin end
                 endcase
             end
@@ -121,17 +110,6 @@ module rv32i_bitmanip (
                         end else if (function7 == 7'b0100100) begin // BEXTI
                             recognized = 1'b1;
                             result = (operand_a >> immediate_index) & 32'b1;
-                        end else if (function7 == 7'b0010100 && immediate_index == 5'd7) begin // ORC.B
-                            recognized = 1'b1;
-                            result = {
-                                {8{(|operand_a[31:24])}},
-                                {8{(|operand_a[23:16])}},
-                                {8{(|operand_a[15:8])}},
-                                {8{(|operand_a[7:0])}}
-                            };
-                        end else if (function7 == 7'b0110100 && immediate_index == 5'd24) begin // REV8
-                            recognized = 1'b1;
-                            result = {operand_a[7:0], operand_a[15:8], operand_a[23:16], operand_a[31:24]};
                         end
                     end
                     default: begin end

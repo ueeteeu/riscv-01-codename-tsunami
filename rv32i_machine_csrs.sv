@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 // Machine/supervisor privilege, PMP, counters, and floating-point CSR state for
 // the RV32 core. The Sv32 walker is a separate block; debug state is not modeled.
 // Privileged CSR and trap model for the RV32 core.
@@ -23,17 +24,31 @@ module rv32i_machine_csrs (
     input  logic        reset,
     input  logic        instruction_retired,
     input  logic [63:0] time_counter,
+=======
+// Machine-mode CSR and synchronous-trap state for the educational RV32 core.
+// This first privileged-ISA stage supports machine mode only, direct mtvec
+// traps, and no asynchronous interrupts or lower privilege levels.
+module rv32i_machine_csrs (
+    input  logic        clk,
+    input  logic        reset,
+
+    // CSR instruction interface. Reads are combinational; writes commit at
+    // the clock edge unless a trap or MRET takes priority.
+>>>>>>> b6184187a2adc5d5114213cce2ba509a429c6955
     input  logic [11:0] csr_address,
     input  logic        csr_write_enable,
     input  logic [31:0] csr_write_data,
     output logic [31:0] csr_read_data,
     output logic        csr_access_valid,
+
+    // Synchronous exception entry and return control from the CPU decoder.
     input  logic        trap_valid,
     input  logic [31:0] trap_pc,
     input  logic [31:0] trap_cause,
     input  logic [31:0] trap_value,
     output logic [31:0] trap_vector,
     input  logic        mret,
+<<<<<<< HEAD
     output logic [31:0] mret_address,
     input  logic        sret,
     output logic [31:0] sret_address,
@@ -60,20 +75,18 @@ module rv32i_machine_csrs (
     input  logic [31:0] pte_access_address,
     input  logic        pte_access_enable,
     output logic        pte_pmp_denied
+=======
+    output logic [31:0] mret_address
+>>>>>>> b6184187a2adc5d5114213cce2ba509a429c6955
 );
-    localparam logic [1:0] PRIV_USER = 2'b00;
-    localparam logic [1:0] PRIV_SUPERVISOR = 2'b01;
-    localparam logic [1:0] PRIV_MACHINE = 2'b11;
-
-    // mstatus carries the privilege-stack bits and MPP; the remaining modeled
-    // CSR storage is kept separately to make supported state explicit.
-    logic [1:0] privilege;
-    logic [31:0] mstatus;
-    logic [31:0] mtvec;
+    logic        mstatus_mie;
+    logic        mstatus_mpie;
+    logic [31:0] mtvec_base;
     logic [31:0] mscratch;
     logic [31:0] mepc;
     logic [31:0] mcause;
     logic [31:0] mtval;
+<<<<<<< HEAD
     logic [31:0] medeleg;
     logic [31:0] mideleg;
     logic [31:0] mie;
@@ -350,10 +363,39 @@ module rv32i_machine_csrs (
                 default: begin end
             endcase
         end
+=======
+
+    // Only the machine CSRs used by this initial implementation are exposed.
+    always_comb begin
+        csr_access_valid = 1'b1;
+        csr_read_data = 32'b0;
+
+        case (csr_address)
+            12'h300: begin // mstatus: MIE and MPIE; MPP is fixed to machine mode
+                csr_read_data = {19'b0, 2'b11, 3'b0, mstatus_mpie,
+                                 3'b0, mstatus_mie, 3'b0};
+            end
+            12'h305: csr_read_data = {mtvec_base[31:2], 2'b00}; // mtvec, direct mode
+            12'h340: csr_read_data = mscratch;
+            12'h341: csr_read_data = mepc;
+            12'h342: csr_read_data = mcause;
+            12'h343: csr_read_data = mtval;
+            default: begin
+                csr_access_valid = 1'b0;
+            end
+        endcase
+
+        // mtvec mode is fixed to direct (00); with C enabled, mepc keeps bit 1.
+        trap_vector = {mtvec_base[31:2], 2'b00};
+        mret_address = {mepc[31:1], 1'b0};
+>>>>>>> b6184187a2adc5d5114213cce2ba509a429c6955
     end
 
+    // Traps save the faulting instruction address and cause. MRET restores
+    // the prior global interrupt-enable bit; interrupts are not yet implemented.
     always_ff @(posedge clk) begin
         if (reset) begin
+<<<<<<< HEAD
             mcycle <= 64'b0;
             minstret <= 64'b0;
         end else begin
@@ -419,12 +461,40 @@ module rv32i_machine_csrs (
                 mstatus[12:11] <= privilege;
                 privilege <= PRIV_MACHINE;
             end
+=======
+            mstatus_mie  <= 1'b0;
+            mstatus_mpie <= 1'b0;
+            mtvec_base   <= 32'b0;
+            mscratch     <= 32'b0;
+            mepc         <= 32'b0;
+            mcause       <= 32'b0;
+            mtval        <= 32'b0;
+        end else if (trap_valid) begin
+            mepc         <= {trap_pc[31:1], 1'b0};
+            mcause       <= trap_cause;
+            mtval        <= trap_value;
+            mstatus_mpie <= mstatus_mie;
+            mstatus_mie  <= 1'b0;
+>>>>>>> b6184187a2adc5d5114213cce2ba509a429c6955
         end else if (mret) begin
-            case (mstatus[12:11])
-                2'b00: privilege <= PRIV_USER;
-                2'b01: privilege <= PRIV_SUPERVISOR;
-                default: privilege <= PRIV_MACHINE;
+            mstatus_mie  <= mstatus_mpie;
+            mstatus_mpie <= 1'b1;
+        end else if (csr_write_enable && csr_access_valid) begin
+            case (csr_address)
+                12'h300: begin
+                    mstatus_mie  <= csr_write_data[3];
+                    mstatus_mpie <= csr_write_data[7];
+                end
+                12'h305: mtvec_base <= {csr_write_data[31:2], 2'b00};
+                12'h340: mscratch <= csr_write_data;
+                12'h341: mepc <= {csr_write_data[31:1], 1'b0};
+                12'h342: mcause <= csr_write_data;
+                12'h343: mtval <= csr_write_data;
+                default: begin
+                    // Unsupported CSR writes are filtered by csr_access_valid.
+                end
             endcase
+<<<<<<< HEAD
             mstatus[3] <= mstatus[7];
             mstatus[7] <= 1'b1;
             mstatus[12:11] <= PRIV_USER;
@@ -514,6 +584,8 @@ module rv32i_machine_csrs (
                     default: begin end
                 endcase
             end
+=======
+>>>>>>> b6184187a2adc5d5114213cce2ba509a429c6955
         end
     end
 endmodule
