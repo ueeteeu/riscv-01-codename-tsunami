@@ -28,7 +28,11 @@ module rv32i_memory #(
     output logic [31:0] data_read_data,
     output logic [31:0] data_read_data_next_word,
     output logic        data_access_fault,
-    output logic        data_access_fault_next_word
+    output logic        data_access_fault_next_word,
+    input  logic        pte_read_enable,
+    input  logic [31:0] pte_read_address,
+    output logic [31:0] pte_read_data,
+    output logic        pte_access_fault
 );
     localparam integer WORD_COUNT   = MEMORY_BYTES / 4;
 
@@ -80,6 +84,17 @@ module rv32i_memory #(
         end
         if (data_address < MEMORY_BYTES - 4) begin
             data_read_data_next_word = words[data_address[22:2] + 1'b1];
+        end
+    end
+
+    always_comb begin
+        pte_read_data = 32'b0;
+        pte_access_fault = 1'b0;
+        if (pte_read_enable === 1'b1) begin
+            pte_access_fault = (pte_read_address[1:0] != 2'b00) ||
+                               (pte_read_address >= MEMORY_BYTES);
+            if (!pte_access_fault)
+                pte_read_data = words[pte_read_address[22:2]];
         end
     end
 

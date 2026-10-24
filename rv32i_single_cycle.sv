@@ -1,11 +1,14 @@
 // Educational single-cycle RV32 core with integer, M/A, simulation-oriented
-// F/D, compressed FP memory operations, bit manipulation, and M/S-mode support.
+// F/D, compressed FP memory operations, bit manipulation, M/S-mode, PMP, and
+// separately wired machine/supervisor interrupt-pending inputs.
 //
-// Instruction memory returns a halfword-aligned 32-bit fetch window in the
-// same cycle. Data memory uses word lanes; adjacent-word ports support FLD/FSD.
+// Instruction/data address outputs are physical addresses; program_counter is
+// virtual when Sv32 is active. Instruction reads are same-cycle; data memory
+// uses word lanes with adjacent-word ports for FLD/FSD.
 module rv32i_single_cycle (
     input  logic        clk,
     input  logic        reset,
+    input  logic [63:0] time_counter,
 
     output logic [31:0] instruction_address,
     input  logic [31:0] instruction,
@@ -23,7 +26,12 @@ module rv32i_single_cycle (
     input  logic [31:0] data_read_data_next_word,
     input  logic        data_access_fault,
     input  logic        data_access_fault_next_word,
-    input  logic [2:0]  external_interrupts,
+    input  logic [2:0]  external_interrupts, // [0] MSIP, [1] MTIP, [2] MEIP
+    input  logic [2:0]  supervisor_interrupts, // [0] SSIP, [1] STIP, [2] SEIP
+    output logic        pte_read_enable,
+    output logic [31:0] pte_read_address,
+    input  logic [31:0] pte_read_data,
+    input  logic        pte_access_fault,
 
     output logic [31:0] program_counter,
     output logic        illegal_instruction
@@ -51,12 +59,32 @@ module rv32i_single_cycle (
     logic [4:0]  double_exception_flags;
     logic [2:0]  dynamic_rounding_mode;
     logic [31:0] floating_csr_state;
+    logic [31:0] satp_state;
+    logic status_sum;
+    logic status_mxr;
     logic [2:0]  fetch_pmp_size;
     logic        fetch_pmp_denied;
     logic [3:0]  data_pmp_size;
     logic        data_pmp_read;
     logic        data_pmp_write;
     logic        data_pmp_denied;
+    logic [31:0] virtual_data_address;
+    logic fetch_translation_ready;
+    logic fetch_page_fault;
+    logic fetch_translation_access_fault;
+    logic data_translation_ready;
+    logic data_page_fault;
+    logic data_translation_access_fault;
+    logic [31:0] translated_fetch_address;
+    logic [31:0] translated_data_address;
+    logic translation_stall;
+    logic sfence_vma;
+    logic sfence_vma_address_valid;
+    logic [31:0] sfence_vma_address;
+    logic sfence_vma_asid_valid;
+    logic [8:0] sfence_vma_asid;
+    logic        data_translation_request;
+    logic        pte_pmp_denied;
 
     logic [31:0] immediate_i;
     logic [31:0] immediate_s;
@@ -65,6 +93,7 @@ module rv32i_single_cycle (
     logic [31:0] immediate_j;
 
     logic [31:0] next_pc;
+    logic [31:0] decoded_next_pc;
     logic [31:0] writeback_value;
     logic        register_write_enable;
     logic        floating_register_write_enable;
@@ -93,6 +122,7 @@ module rv32i_single_cycle (
     logic [31:0] csr_source_value;
     logic [31:0] csr_new_value;
     logic        csr_write_attempt;
+    logic        instruction_retired;
     logic [63:0] product_unsigned;
     logic signed [63:0] product_signed;
     logic signed [63:0] product_signed_unsigned;
@@ -112,6 +142,8 @@ module rv32i_single_cycle (
     rv32i_machine_csrs machine_csrs (
         .clk(clk),
         .reset(reset),
+        .instruction_retired(instruction_retired),
+        .time_counter(time_counter),
         .csr_address(csr_address),
         .csr_write_enable(csr_write_enable),
         .csr_write_data(csr_write_data),
@@ -127,6 +159,7 @@ module rv32i_single_cycle (
         .sret(sret),
         .sret_address(sret_address),
         .external_interrupts(external_interrupts),
+        .supervisor_interrupts(supervisor_interrupts),
         .interrupt_valid(interrupt_valid),
         .interrupt_cause(interrupt_cause),
         .current_privilege(current_privilege),
@@ -134,14 +167,52 @@ module rv32i_single_cycle (
         .floating_flags(floating_flags_write_data),
         .dynamic_rounding_mode(dynamic_rounding_mode),
         .floating_csr_state(floating_csr_state),
-        .fetch_address(program_counter),
+        .satp_state(satp_state),
+        .status_sum(status_sum),
+        .status_mxr(status_mxr),
+        .fetch_address(instruction_address),
         .fetch_size(fetch_pmp_size),
         .fetch_pmp_denied(fetch_pmp_denied),
         .data_access_address(data_address),
         .data_access_size(data_pmp_size),
         .data_access_read(data_pmp_read),
         .data_access_write(data_pmp_write),
-        .data_pmp_denied(data_pmp_denied)
+        .data_pmp_denied(data_pmp_denied),
+        .pte_access_address(pte_read_address),
+        .pte_access_enable(pte_read_enable),
+        .pte_pmp_denied(pte_pmp_denied)
+    );
+
+    rv32i_sv32_mmu address_translation (
+        .clk(clk),
+        .reset(reset),
+        .satp(satp_state),
+        .privilege(current_privilege),
+        .sum(status_sum),
+        .mxr(status_mxr),
+        .sfence_vma(sfence_vma),
+        .sfence_vma_address_valid(sfence_vma_address_valid),
+        .sfence_vma_address(sfence_vma_address),
+        .sfence_vma_asid_valid(sfence_vma_asid_valid),
+        .sfence_vma_asid(sfence_vma_asid),
+        .fetch_virtual_address(program_counter),
+        .fetch_physical_address(translated_fetch_address),
+        .fetch_ready(fetch_translation_ready),
+        .fetch_page_fault(fetch_page_fault),
+        .fetch_access_fault(fetch_translation_access_fault),
+        .data_virtual_address(virtual_data_address),
+        .data_read(data_pmp_read && fetch_translation_ready &&
+                   !fetch_page_fault && !fetch_translation_access_fault),
+        .data_write(data_pmp_write && fetch_translation_ready &&
+                    !fetch_page_fault && !fetch_translation_access_fault),
+        .data_physical_address(translated_data_address),
+        .data_ready(data_translation_ready),
+        .data_page_fault(data_page_fault),
+        .data_access_fault(data_translation_access_fault),
+        .pte_read_enable(pte_read_enable),
+        .pte_read_address(pte_read_address),
+        .pte_read_data(pte_read_data),
+        .pte_access_fault(pte_access_fault || pte_pmp_denied)
     );
 
     rv32i_bitmanip bitmanip_unit (
@@ -184,23 +255,31 @@ module rv32i_single_cycle (
         .illegal_compressed(illegal_compressed)
     );
 
-    // The instruction address is the current PC; memory supplies the
-    // instruction combinationally for this single-cycle design.
+    // Memory supplies physical instruction/data reads combinationally.
     always_comb begin
-        instruction_address = program_counter;
         shifted_load_data = data_read_data >> {data_address[1:0], 3'b000};
     end
 
     // Keep address generation independent of memory responses so access-fault
     // feedback cannot create a combinational path back into the address.
     always_comb begin
-        data_address = 32'b0;
+        instruction_address = translated_fetch_address;
+        virtual_data_address = 32'b0;
         case (decoded_instruction[6:0])
-            7'b0000011, 7'b0000111: data_address = rs1_value + immediate_i;
-            7'b0100011, 7'b0100111: data_address = rs1_value + immediate_s;
-            7'b0101111: data_address = rs1_value;
+            7'b0000011, 7'b0000111: virtual_data_address = rs1_value + immediate_i;
+            7'b0100011, 7'b0100111: virtual_data_address = rs1_value + immediate_s;
+            7'b0101111: virtual_data_address = rs1_value;
             default: begin end
         endcase
+        data_address = translated_data_address;
+    end
+
+    always_comb begin
+        data_translation_request = (data_pmp_read || data_pmp_write) &&
+            fetch_translation_ready && !fetch_page_fault &&
+            !fetch_translation_access_fault;
+        translation_stall = !fetch_translation_ready ||
+            (data_translation_request && !data_translation_ready);
     end
 
     always_comb begin
@@ -283,7 +362,7 @@ module rv32i_single_cycle (
     // and ensure every output has a value for every instruction encoding.
     always_comb begin
         pc_increment         = is_compressed ? 32'd2 : 32'd4;
-        next_pc              = program_counter + pc_increment;
+        decoded_next_pc      = program_counter + pc_increment;
         writeback_value      = 32'b0;
         register_write_enable = 1'b0;
         floating_register_write_enable = 1'b0;
@@ -310,6 +389,11 @@ module rv32i_single_cycle (
         sret                  = 1'b0;
             reservation_set       = 1'b0;
             reservation_clear     = 1'b0;
+            sfence_vma            = 1'b0;
+            sfence_vma_address_valid = 1'b0;
+            sfence_vma_address    = 32'b0;
+            sfence_vma_asid_valid = 1'b0;
+            sfence_vma_asid       = 9'b0;
 
         case (opcode)
             7'b0110011: begin // R-type register-register arithmetic
@@ -402,7 +486,7 @@ module rv32i_single_cycle (
                         end else begin
                             trap_valid = 1'b1;
                             trap_cause = 32'd4;
-                            trap_value = data_address;
+                            trap_value = virtual_data_address;
                         end
                     end
                     3'b001: begin // LH
@@ -412,7 +496,7 @@ module rv32i_single_cycle (
                         end else begin
                             trap_valid = 1'b1;
                             trap_cause = 32'd4;
-                            trap_value = data_address;
+                            trap_value = virtual_data_address;
                         end
                     end
                     3'b010: begin // LW requires a word-aligned address
@@ -422,7 +506,7 @@ module rv32i_single_cycle (
                         end else begin
                             trap_valid = 1'b1;
                             trap_cause = 32'd4;
-                            trap_value = data_address;
+                            trap_value = virtual_data_address;
                         end
                     end
                     default: illegal_instruction = 1'b1;
@@ -442,7 +526,7 @@ module rv32i_single_cycle (
                     end else begin
                         trap_valid = 1'b1;
                         trap_cause = 32'd6;
-                        trap_value = data_address;
+                        trap_value = virtual_data_address;
                     end
                 end else if (funct3 == 3'b010) begin // SW
                     if (data_address[1:0] == 2'b00) begin
@@ -451,7 +535,7 @@ module rv32i_single_cycle (
                     end else begin
                         trap_valid = 1'b1;
                         trap_cause = 32'd6;
-                        trap_value = data_address;
+                        trap_value = virtual_data_address;
                     end
                 end else begin
                     illegal_instruction = 1'b1;
@@ -466,7 +550,7 @@ module rv32i_single_cycle (
                     end else begin
                         trap_valid = 1'b1;
                         trap_cause = 32'd4;
-                        trap_value = data_address;
+                        trap_value = virtual_data_address;
                     end
                 end else if (funct3 == 3'b011) begin // FLD
                     // The aligned 64-bit value is assembled little-endian from
@@ -477,7 +561,7 @@ module rv32i_single_cycle (
                     end else begin
                         trap_valid = 1'b1;
                         trap_cause = 32'd4;
-                        trap_value = data_address;
+                        trap_value = virtual_data_address;
                     end
                 end else begin
                     illegal_instruction = 1'b1;
@@ -493,7 +577,7 @@ module rv32i_single_cycle (
                     end else begin
                         trap_valid = 1'b1;
                         trap_cause = 32'd6;
-                        trap_value = data_address;
+                        trap_value = virtual_data_address;
                     end
                 end else if (funct3 == 3'b011) begin // FSD
                     if (data_address[2:0] == 3'b000) begin
@@ -508,7 +592,7 @@ module rv32i_single_cycle (
                     end else begin
                         trap_valid = 1'b1;
                         trap_cause = 32'd6;
-                        trap_value = data_address;
+                        trap_value = virtual_data_address;
                     end
                 end else begin
                     illegal_instruction = 1'b1;
@@ -545,29 +629,29 @@ module rv32i_single_cycle (
 
             7'b1100011: begin // Conditional branches
                 case (funct3)
-                    3'b000: if (rs1_value == rs2_value) next_pc = program_counter + immediate_b; // BEQ
-                    3'b001: if (rs1_value != rs2_value) next_pc = program_counter + immediate_b; // BNE
-                    3'b100: if ($signed(rs1_value) < $signed(rs2_value)) next_pc = program_counter + immediate_b; // BLT
-                    3'b101: if ($signed(rs1_value) >= $signed(rs2_value)) next_pc = program_counter + immediate_b; // BGE
-                    3'b110: if (rs1_value < rs2_value) next_pc = program_counter + immediate_b; // BLTU
-                    3'b111: if (rs1_value >= rs2_value) next_pc = program_counter + immediate_b; // BGEU
+                    3'b000: if (rs1_value == rs2_value) decoded_next_pc = program_counter + immediate_b; // BEQ
+                    3'b001: if (rs1_value != rs2_value) decoded_next_pc = program_counter + immediate_b; // BNE
+                    3'b100: if ($signed(rs1_value) < $signed(rs2_value)) decoded_next_pc = program_counter + immediate_b; // BLT
+                    3'b101: if ($signed(rs1_value) >= $signed(rs2_value)) decoded_next_pc = program_counter + immediate_b; // BGE
+                    3'b110: if (rs1_value < rs2_value) decoded_next_pc = program_counter + immediate_b; // BLTU
+                    3'b111: if (rs1_value >= rs2_value) decoded_next_pc = program_counter + immediate_b; // BGEU
                     default: illegal_instruction = 1'b1;
                 endcase
-                if (next_pc[0] != 1'b0 && next_pc != program_counter + pc_increment) begin
+                if (decoded_next_pc[0] != 1'b0 && decoded_next_pc != program_counter + pc_increment) begin
                     trap_valid = 1'b1;
                     trap_cause = 32'd0;
-                    trap_value = next_pc;
+                    trap_value = decoded_next_pc;
                 end
             end
 
             7'b1101111: begin // JAL: save the return address and jump
                 register_write_enable = 1'b1;
                 writeback_value = program_counter + pc_increment;
-                next_pc = program_counter + immediate_j;
-                if (next_pc[0] != 1'b0) begin
+                decoded_next_pc = program_counter + immediate_j;
+                if (decoded_next_pc[0] != 1'b0) begin
                     trap_valid = 1'b1;
                     trap_cause = 32'd0;
-                    trap_value = next_pc;
+                    trap_value = decoded_next_pc;
                 end
             end
 
@@ -575,11 +659,11 @@ module rv32i_single_cycle (
                 if (funct3 == 3'b000) begin
                     register_write_enable = 1'b1;
                     writeback_value = program_counter + pc_increment;
-                    next_pc = (rs1_value + immediate_i) & 32'hffff_fffe;
-                    if (next_pc[0] != 1'b0) begin
+                    decoded_next_pc = (rs1_value + immediate_i) & 32'hffff_fffe;
+                    if (decoded_next_pc[0] != 1'b0) begin
                         trap_valid = 1'b1;
                         trap_cause = 32'd0;
-                        trap_value = next_pc;
+                        trap_value = decoded_next_pc;
                     end
                 end else begin
                     illegal_instruction = 1'b1;
@@ -606,11 +690,11 @@ module rv32i_single_cycle (
                     end else if (data_access_fault) begin
                         trap_valid = 1'b1;
                         trap_cause = (decoded_instruction[31:27] == 5'b00010) ? 32'd5 : 32'd7;
-                        trap_value = data_address;
+                        trap_value = virtual_data_address;
                     end else if (data_address[1:0] != 2'b00) begin
                         trap_valid = 1'b1;
                         trap_cause = (decoded_instruction[31:27] == 5'b00010) ? 32'd4 : 32'd6;
-                        trap_value = data_address;
+                        trap_value = virtual_data_address;
                     end else begin
                         register_write_enable = 1'b1;
                         writeback_value = data_read_data;
@@ -670,16 +754,26 @@ module rv32i_single_cycle (
                             12'h302: begin // MRET
                                 if (rd == 0 && rs1 == 0 && current_privilege == 2'b11) begin
                                     mret = 1'b1;
-                                    next_pc = mret_address;
+                                    decoded_next_pc = mret_address;
                                 end else illegal_instruction = 1'b1;
                             end
                             12'h102: begin // SRET
                                 if (rd == 0 && rs1 == 0 && current_privilege >= 2'b01) begin
                                     sret = 1'b1;
-                                    next_pc = sret_address;
+                                    decoded_next_pc = sret_address;
                                 end else illegal_instruction = 1'b1;
                             end
-                            default: illegal_instruction = 1'b1;
+                            default: begin
+                                if (decoded_instruction[31:25] == 7'b0001001 &&
+                                    rd == 0 && current_privilege >= 2'b01) begin
+                                    sfence_vma = 1'b1;
+                                    sfence_vma_address_valid = (rs1 != 0);
+                                    sfence_vma_address = rs1_value;
+                                    sfence_vma_asid_valid = (rs2 != 0);
+                                    sfence_vma_asid = rs2_value[8:0];
+                                end else
+                                    illegal_instruction = 1'b1;
+                            end
                         endcase
                     end
                     3'b001, 3'b010, 3'b011, 3'b101, 3'b110, 3'b111: begin
@@ -719,10 +813,12 @@ module rv32i_single_cycle (
 
         // Synchronous faults override normal execution; otherwise an enabled
         // interrupt redirects the PC before the architectural state is updated.
-        if (instruction_access_fault === 1'b1 ||
+        if (fetch_translation_ready && !fetch_page_fault &&
+            !fetch_translation_access_fault &&
+            (instruction_access_fault === 1'b1 ||
             (instruction[1:0] === 2'b11 &&
              instruction_access_fault_next_halfword === 1'b1) ||
-            (!illegal_instruction && fetch_pmp_denied)) begin
+            (!illegal_instruction && fetch_pmp_denied))) begin
             trap_valid = 1'b1;
             trap_cause = 32'd1;
             trap_value = (instruction_access_fault === 1'b1) ?
@@ -731,13 +827,25 @@ module rv32i_single_cycle (
                            instruction_access_fault_next_halfword === 1'b1) ?
                           program_counter + 32'd2 : program_counter);
         end
-        if (illegal_compressed &&
+        if (fetch_translation_ready && fetch_translation_access_fault) begin
+            trap_valid = 1'b1;
+            trap_cause = 32'd1;
+            trap_value = program_counter;
+        end
+        if (fetch_translation_ready && fetch_page_fault) begin
+            trap_valid = 1'b1;
+            trap_cause = 32'd12;
+            trap_value = program_counter;
+        end
+        if (fetch_translation_ready && !fetch_page_fault &&
+            !fetch_translation_access_fault && illegal_compressed &&
             instruction_access_fault !== 1'b1 &&
             !(instruction[1:0] === 2'b11 &&
               instruction_access_fault_next_halfword === 1'b1)) begin
             illegal_instruction = 1'b1;
         end
-        if (illegal_instruction &&
+        if (fetch_translation_ready && !fetch_page_fault &&
+            !fetch_translation_access_fault && illegal_instruction &&
             instruction_access_fault !== 1'b1 &&
             !(instruction[1:0] === 2'b11 &&
               instruction_access_fault_next_halfword === 1'b1)) begin
@@ -745,47 +853,97 @@ module rv32i_single_cycle (
             trap_cause = 32'd2;
             trap_value = is_compressed ? {16'b0, instruction[15:0]} : decoded_instruction;
         end
-        if (!illegal_instruction && data_access_fault &&
+        if (fetch_page_fault || fetch_translation_access_fault ||
+            instruction_access_fault === 1'b1 ||
+            (instruction[1:0] === 2'b11 &&
+             instruction_access_fault_next_halfword === 1'b1))
+            illegal_instruction = 1'b0;
+        if (data_translation_request && data_translation_ready &&
+            !data_page_fault && !data_translation_access_fault &&
+            !illegal_instruction && data_access_fault &&
             (opcode == 7'b0000011 || opcode == 7'b0000111)) begin
             trap_valid = 1'b1;
             trap_cause = 32'd5;
-            trap_value = data_address;
+            trap_value = virtual_data_address;
         end
-        if (!illegal_instruction && data_pmp_denied && data_pmp_read) begin
+        if (data_translation_request && data_translation_ready && !illegal_instruction &&
+            data_translation_access_fault && data_pmp_read) begin
             trap_valid = 1'b1;
             trap_cause = 32'd5;
-            trap_value = data_address;
+            trap_value = virtual_data_address;
         end
-        if (!illegal_instruction && data_pmp_denied && data_pmp_write) begin
+        if (data_translation_request && data_translation_ready && !illegal_instruction &&
+            data_translation_access_fault && data_pmp_write) begin
             trap_valid = 1'b1;
             trap_cause = 32'd7;
-            trap_value = data_address;
+            trap_value = virtual_data_address;
         end
-        if (!illegal_instruction && data_access_fault &&
+        if (data_translation_request && data_translation_ready && !illegal_instruction &&
+            data_page_fault && data_pmp_read) begin
+            trap_valid = 1'b1;
+            trap_cause = 32'd13;
+            trap_value = virtual_data_address;
+        end
+        if (data_translation_request && data_translation_ready && !illegal_instruction &&
+            data_page_fault && data_pmp_write) begin
+            trap_valid = 1'b1;
+            trap_cause = 32'd15;
+            trap_value = virtual_data_address;
+        end
+        if (data_translation_request && data_translation_ready && !illegal_instruction &&
+            !data_page_fault && !data_translation_access_fault &&
+            data_pmp_denied && data_pmp_read) begin
+            trap_valid = 1'b1;
+            trap_cause = 32'd5;
+            trap_value = virtual_data_address;
+        end
+        if (data_translation_ready && !illegal_instruction &&
+            !data_page_fault && !data_translation_access_fault &&
+            data_pmp_denied && data_pmp_write) begin
+            trap_valid = 1'b1;
+            trap_cause = 32'd7;
+            trap_value = virtual_data_address;
+        end
+        if (data_translation_request && data_translation_ready &&
+            !data_page_fault && !data_translation_access_fault &&
+            !illegal_instruction && data_access_fault &&
             (opcode == 7'b0100011 || opcode == 7'b0100111)) begin
             trap_valid = 1'b1;
             trap_cause = 32'd7;
-            trap_value = data_address;
+            trap_value = virtual_data_address;
         end
-        if (!illegal_instruction && opcode == 7'b0000111 && funct3 == 3'b011 &&
+        if (data_translation_request && data_translation_ready &&
+            !data_page_fault && !data_translation_access_fault && !illegal_instruction &&
+            opcode == 7'b0000111 && funct3 == 3'b011 &&
             data_access_fault_next_word) begin
             trap_valid = 1'b1;
             trap_cause = 32'd5;
-            trap_value = data_address + 32'd4;
+            trap_value = virtual_data_address + 32'd4;
         end
-        if (!illegal_instruction && opcode == 7'b0100111 && funct3 == 3'b011 &&
+        if (data_translation_request && data_translation_ready &&
+            !data_page_fault && !data_translation_access_fault && !illegal_instruction &&
+            opcode == 7'b0100111 && funct3 == 3'b011 &&
             data_access_fault_next_word) begin
             trap_valid = 1'b1;
             trap_cause = 32'd7;
-            trap_value = data_address + 32'd4;
+            trap_value = virtual_data_address + 32'd4;
         end
         if (!trap_valid && !illegal_instruction && interrupt_valid) begin
             trap_valid = 1'b1;
             trap_cause = interrupt_cause;
             trap_value = 32'b0;
         end
-        if (trap_valid) begin
-            next_pc = trap_vector;
+        if (translation_stall) begin
+            trap_valid = 1'b0;
+            illegal_instruction = 1'b0;
+            register_write_enable = 1'b0;
+            floating_register_write_enable = 1'b0;
+            data_write_enable = 1'b0;
+            data_write_enable_next_word = 1'b0;
+            csr_write_enable = 1'b0;
+            reservation_set = 1'b0;
+            reservation_clear = 1'b0;
+        end else if (trap_valid) begin
             register_write_enable = 1'b0;
             floating_register_write_enable = 1'b0;
             data_write_enable = 1'b0;
@@ -800,6 +958,14 @@ module rv32i_single_cycle (
         if (rd == 5'd0) begin
             register_write_enable = 1'b0;
         end
+    end
+
+    // Keep trap-vector feedback outside instruction decode to avoid a
+    // combinational cycle between exception arbitration and next-PC selection.
+    always_comb begin
+        next_pc = trap_valid ? trap_vector :
+                  (translation_stall ? program_counter : decoded_next_pc);
+        instruction_retired = !reset && !translation_stall && !trap_valid;
     end
 
     // State changes happen at the clock edge. Reset clears the PC and all

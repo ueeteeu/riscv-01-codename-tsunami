@@ -2,7 +2,8 @@
 
 An educational 32-bit RISC-V processor implemented as a single-cycle
 SystemVerilog core. Instruction and data memories are separate interfaces;
-`rv32i_memory` provides behavioral memory for simulation.
+`rv32i_memory` provides behavioral memory for simulation. With Sv32 enabled,
+integrations must also connect the core's PTE-read sideband to physical memory.
 
 ## Implemented instruction sets
 
@@ -25,8 +26,26 @@ SystemVerilog core. Instruction and data memories are separate interfaces;
   set/clear/invert/extract, and conditional-zero operations.
 - **Machine/supervisor privileged subset:** implemented trap state, delegated
   exceptions and interrupts, `ECALL`, `EBREAK`, `MRET`, `SRET`, and supported
-  machine/supervisor CSR register/immediate operations. The three interrupt
-  inputs represent software, timer, and external pending signals.
+  machine/supervisor CSR register/immediate operations. `external_interrupts`
+  supplies machine software, timer, and external pending bits; the separate
+  `supervisor_interrupts` input supplies supervisor software, timer, and
+  external pending bits.
+- **Performance counters:** writable 64-bit `mcycle`/`minstret` counters with
+  RV32 high/low CSR halves, read-only `cycle`/`instret` aliases,
+  `mcounteren`/`scounteren` access control, and `mcountinhibit` for cycle and
+  instruction-retirement counting.
+- **PMP subset:** four machine-mode entries expose `pmpcfg0` and `pmpaddr0`-
+  `pmpaddr3`, with OFF/TOR/NA4/NAPOT matching, first-overlap priority,
+  permissions, lock bits, and S/U-mode access checks for instruction fetches
+  and data reads/writes. Unmatched S/U accesses are denied when any entry is
+  active; unlocked matching entries do not restrict M-mode accesses.
+- **Sv32 subset:** `satp.MODE=1` enables a blocking two-level page-table walker
+  and four-entry TLB for S/U instruction fetches and data accesses. Leaf
+  permissions, U/S rules, `SUM`, `MXR`, superpages, A/D checks, `SFENCE.VMA`
+  address/ASID-selective invalidation (including inherited global mappings and
+  global-entry preservation for ASID-specific fences), page-fault causes/
+  `mtval`, and PMP checks on PTE reads are modeled. Walks are canceled if
+  `satp` changes mid-translation. M-mode accesses bypass translation.
 - **Floating-point CSRs:** `fflags`, `frm`, and `fcsr` support accrued flags,
   software flag clearing, and dynamic rounding-mode selection.
 - `FENCE`, `FENCE.I`, and `WFI` are accepted as no-ops.
@@ -57,12 +76,18 @@ instructions; they do not have independent hardware encodings.
 ## Current limitations
 
 - The privileged implementation is not a complete Privileged Architecture
-  implementation. `satp` is stored but does not provide address translation;
-  counters, debug state, user-level trap CSRs, and several privilege controls
-  are not implemented. `WFI` does not suspend execution.
+  implementation. Sv32 is limited to the 32-bit physical memory interface and
+  a four-entry TLB; A/D bits must be maintained by software, `MPRV`, `TVM`,
+  platform PMA behavior, and instruction fetches straddling virtual-page
+  boundaries are not implemented. The page-table read sideband must be
+  connected to physical memory by any integration. The `time` counter, debug
+  state, user-level trap CSRs, and several privilege controls are absent.
+  `WFI` does not suspend execution.
 - Interrupt sources are direct simulation inputs, not a platform interrupt
-  controller or timer/software-interrupt device. Only the implemented
-  machine/supervisor pending, enable, delegation, and trap behavior is modeled.
+  controller or timer/software-interrupt device. Machine and supervisor
+  pending/enable/delegation, privilege qualification, and prioritized trap
+  behavior are modeled only for the six standard software/timer/external
+  interrupt classes.
 - `FENCE` and `FENCE.I` provide no inter-hart ordering or instruction-cache
   synchronization. The atomic reservation model is single-hart; `aq`/`rl`
   ordering and interactions with other harts are not modeled.
@@ -80,10 +105,12 @@ instructions; they do not have independent hardware encodings.
 - Assembly aliases such as `li`, `la`, `mv`, `neg`, `seqz`, `not`, and `ret`
   are not distinct hardware opcodes; they must be expanded by an assembler to
   the base instructions implemented by the core.
-- Instruction-fetch access faults and complete virtual-memory and privileged
-  architecture conformance are not implemented. The behavioral memory reports
-  fetch faults for addresses outside its configured capacity; it is not a
-  complete bus-fault or page-boundary model.
+- PMP implements four entries only; machine protection bypass controls,
+  machine previous-privilege data accesses, and additional platform-specific
+  protection mechanisms are not modeled. Complete virtual-memory and
+  privileged-architecture conformance are not implemented. The behavioral
+  memory reports fetch faults for addresses outside its configured capacity;
+  it is not a complete bus-fault or page-boundary model.
 
 ## Source and tests
 
@@ -94,12 +121,16 @@ instructions; they do not have independent hardware encodings.
   memory-instruction expansion.
 - `rv32i_bitmanip.sv`: selected Zba/Zbb/Zbs/Zicond operations.
 - `rv32f_unit.sv`, `rv32d_unit.sv`: simulation-oriented floating-point units.
-- `rv32i_machine_csrs.sv`: machine/supervisor CSR, trap, interrupt, and FCSR
-  state.
+- `rv32i_machine_csrs.sv`: machine/supervisor CSR, trap, interrupt, PMP,
+  counter, and FCSR state.
+- `rv32i_sv32_mmu.sv`: blocking Sv32 page-table walker and small TLB.
 - `rv32i_hex_display.sv`: optional multiplexed hexadecimal display.
-- `tb_*.sv`: focused tests for integer, atomic, bit-manipulation, compressed
+- `tb_*.sv`: focused tests for integer, atomic, counters, PMP, bit-manipulation, compressed
   decode/execution, RV32F/RV32D, FCSR, instruction/data access faults, machine
-  traps/interrupts, and delegated supervisor traps.
+  traps/interrupts, delegated supervisor interrupts/traps, and Sv32
+  translation/page faults, superpages, inherited global mappings, selective
+  `SFENCE.VMA`, ASID switching during walks, `SUM`, `MXR`, and A/D-bit
+  enforcement.
 
 Compile a testbench and its source modules with a SystemVerilog simulator. For
 example, using Icarus Verilog from the project directory:

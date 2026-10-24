@@ -8,6 +8,7 @@ module tb_rv32i_interrupt;
     logic [3:0] data_write_mask;
     logic data_write_enable, data_access_fault;
     logic [2:0] external_interrupts = 3'b000;
+    logic [2:0] supervisor_interrupts = 3'b000;
     logic [31:0] program_counter;
     logic illegal_instruction;
 
@@ -19,6 +20,7 @@ module tb_rv32i_interrupt;
         .data_write_enable(data_write_enable), .data_write_mask(data_write_mask),
         .data_read_data(data_read_data), .data_access_fault(data_access_fault),
         .external_interrupts(external_interrupts),
+        .supervisor_interrupts(supervisor_interrupts),
         .program_counter(program_counter), .illegal_instruction(illegal_instruction)
     );
 

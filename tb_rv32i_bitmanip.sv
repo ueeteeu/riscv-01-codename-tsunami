@@ -57,10 +57,30 @@ module tb_rv32i_bitmanip;
         check_result(32'h0000_0000);
         instruction = encode_i(12'h605, 1, 3'b001, 2); // sext.h
         check_result(32'h0000_0100);
+        operand_a = 32'hffff_8080;
+        instruction = encode_i(12'h604, 1, 3'b001, 2); // negative sext.b
+        check_result(32'hffff_ff80);
+        instruction = encode_i(12'h605, 1, 3'b001, 2); // negative sext.h
+        check_result(32'hffff_8080);
+        operand_a = 32'b0;
+        instruction = encode_i(12'h600, 1, 3'b001, 2); // clz zero input
+        check_result(32'd32);
+        instruction = encode_i(12'h601, 1, 3'b001, 2); // ctz zero input
+        check_result(32'd32);
+        instruction = encode_i(12'h602, 1, 3'b001, 2); // cpop zero input
+        check_result(32'd0);
         instruction = encode_i(12'h603, 1, 3'b001, 2); // invalid unary encoding
         #1;
         if (recognized !== 1'b0) $fatal(1, "Reserved unary encoding was recognized");
 
+        operand_a = 32'h8000_0100;
+        operand_b = 32'b0;
+        instruction = encode_r(7'b0110000, 0, 1, 3'b001, 2, 7'h33); // rol by zero
+        check_result(32'h8000_0100);
+        instruction = encode_r(7'b0110000, 0, 1, 3'b101, 2, 7'h33); // ror by zero
+        check_result(32'h8000_0100);
+        instruction = encode_i(12'h600, 1, 3'b101, 2); // rori by zero
+        check_result(32'h8000_0100);
         instruction = encode_r(7'b0110000, 4, 1, 3'b001, 2, 7'h33); // rol
         check_result(32'h0000_1008);
         instruction = encode_r(7'b0110000, 4, 1, 3'b101, 2, 7'h33); // ror
@@ -81,8 +101,12 @@ module tb_rv32i_bitmanip;
         operand_b = 32'h0000_0001;
         instruction = encode_r(7'b0000101, 2, 1, 3'b100, 3, 7'h33); // min signed
         check_result(32'hffff_ffff);
+        instruction = encode_r(7'b0000101, 2, 1, 3'b101, 3, 7'h33); // max signed
+        check_result(32'h0000_0001);
         instruction = encode_r(7'b0000101, 2, 1, 3'b110, 3, 7'h33); // minu
         check_result(32'h0000_0001);
+        instruction = encode_r(7'b0000101, 2, 1, 3'b111, 3, 7'h33); // maxu
+        check_result(32'hffff_ffff);
 
         operand_a = 32'b0;
         instruction = encode_r(7'b0010100, 5, 1, 3'b001, 3, 7'h33); // bset
@@ -95,6 +119,12 @@ module tb_rv32i_bitmanip;
         check_result(32'h0000_0020);
         operand_a = 32'h0000_0020;
         instruction = encode_i(12'h485, 1, 3'b101, 3); // bexti bit 5
+        check_result(32'h1);
+        operand_a = 32'h8000_0000;
+        instruction = encode_i(12'h49f, 1, 3'b101, 3); // bexti bit 31
+        check_result(32'h1);
+        operand_b = 32'd31;
+        instruction = encode_r(7'b0100100, 31, 1, 3'b101, 3, 7'h33); // bext bit 31
         check_result(32'h1);
 
         operand_a = 32'h0100_0080;
