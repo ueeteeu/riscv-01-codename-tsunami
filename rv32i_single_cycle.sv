@@ -8,7 +8,7 @@
 module rv32i_single_cycle (
     input  logic        clk,
     input  logic        reset,
-    input  logic [63:0] time_counter,
+    input  logic [63:0] time_counter, // Platform source exposed through the time/timeh CSRs.
 
     output logic [31:0] instruction_address,
     input  logic [31:0] instruction,

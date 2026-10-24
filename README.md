@@ -31,9 +31,11 @@ integrations must also connect the core's PTE-read sideband to physical memory.
   `supervisor_interrupts` input supplies supervisor software, timer, and
   external pending bits.
 - **Performance counters:** writable 64-bit `mcycle`/`minstret` counters with
-  RV32 high/low CSR halves, read-only `cycle`/`instret` aliases,
-  `mcounteren`/`scounteren` access control, and `mcountinhibit` for cycle and
-  instruction-retirement counting.
+  RV32 high/low CSR halves, read-only `cycle`/`instret` aliases, and a
+  platform-supplied read-only 64-bit `time` counter. `mcounteren`/`scounteren`
+  control U/S access to all three counter aliases, while `mcountinhibit`
+  controls cycle and instruction-retirement counting. Integrations must drive
+  the core's `time_counter` input.
 - **PMP subset:** four machine-mode entries expose `pmpcfg0` and `pmpaddr0`-
   `pmpaddr3`, with OFF/TOR/NA4/NAPOT matching, first-overlap priority,
   permissions, lock bits, and S/U-mode access checks for instruction fetches
@@ -55,6 +57,19 @@ out-of-range data-memory accesses, and on instruction fetches outside memory
 (including a 32-bit instruction that straddles the end of memory).
 Byte-write masks preserve unaffected bytes for narrow stores; adjacent-word
 memory ports support aligned 64-bit transfers.
+
+## Reference spec pack
+
+The project includes a structured reference catalog for the RISC-V PDFs and
+related platform docs that were provided with the task. The index is kept in
+[docs/specs/README.md](./docs/specs/README.md) and is grouped by architecture,
+platform, firmware, trace, and profile references so the material is easy to
+navigate while the RTL remains focused on the implemented RV32 subset.
+
+The current codebase implements the core RV32 privileged and virtual-memory
+subset, while the firmware/platform references (including the UEFI and SBI
+material) are tracked as future integration work rather than a completed boot
+stack.
 
 ## Immediates
 
@@ -80,9 +95,9 @@ instructions; they do not have independent hardware encodings.
   a four-entry TLB; A/D bits must be maintained by software, `MPRV`, `TVM`,
   platform PMA behavior, and instruction fetches straddling virtual-page
   boundaries are not implemented. The page-table read sideband must be
-  connected to physical memory by any integration. The `time` counter, debug
-  state, user-level trap CSRs, and several privilege controls are absent.
-  `WFI` does not suspend execution.
+  connected to physical memory by any integration. Debug state, user-level
+  trap CSRs, and several privilege controls are absent. `WFI` does not suspend
+  execution.
 - Interrupt sources are direct simulation inputs, not a platform interrupt
   controller or timer/software-interrupt device. Machine and supervisor
   pending/enable/delegation, privilege qualification, and prioritized trap
@@ -125,7 +140,7 @@ instructions; they do not have independent hardware encodings.
   counter, and FCSR state.
 - `rv32i_sv32_mmu.sv`: blocking Sv32 page-table walker and small TLB.
 - `rv32i_hex_display.sv`: optional multiplexed hexadecimal display.
-- `tb_*.sv`: focused tests for integer, atomic, counters, PMP, bit-manipulation, compressed
+- `tb_*.sv`: focused tests for integer, atomic, counters/time, PMP, bit-manipulation, compressed
   decode/execution, RV32F/RV32D, FCSR, instruction/data access faults, machine
   traps/interrupts, delegated supervisor interrupts/traps, and Sv32
   translation/page faults, superpages, inherited global mappings, selective
